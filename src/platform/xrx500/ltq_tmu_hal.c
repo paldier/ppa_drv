@@ -924,37 +924,29 @@ int32_t tmu_hal_get_qos_mib1(
 	cbm_tmu_res_t *tmu_res = NULL;
 	dp_subif_t dp_subif = {0};
 	struct tmu_hal_user_subif_abstract *subif_index = NULL;
-	struct tmu_hal_user_subif_abstract *port_subif_index = NULL;
+	struct tmu_hal_dp_res_info res = {0};
 
-	TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> Get MIB for QueueId %d\n",__FUNCTION__, queueid); 
-	if(dp_get_netif_subifid(netdev, NULL, NULL, 0, &dp_subif, 0) != PPA_SUCCESS) {
+	TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> Get MIB for QueueId:[%d] Flag:[%d]\n",
+			__FUNCTION__, queueid, flag);
+	if (tmu_hal_get_tmu_res_from_netdevice(netdev, (netdev ? netdev->name: NULL), 0, &dp_subif, &nof_of_tmu_ports, &tmu_res, flag) != TMU_HAL_STATUS_OK) {
+		TMU_HAL_DEBUG_MSG( TMU_DEBUG_ERR,"%s:%d Error: Failed to get resources from Netdevice\n",
+				__FUNCTION__, __LINE__);
 		return TMU_HAL_STATUS_ERR;
 	}
 
-#ifdef TMU_HAL_TEST
-	dp_subif.port_id = 15;
-	dp_subif.subif = 0;
-#endif
-
-	dp_subif.subif	= dp_subif.subif >> 8; 
-	if (cbm_dp_port_resources_get(&dp_subif.port_id, &nof_of_tmu_ports, &tmu_res, 0) != TMU_HAL_STATUS_OK) {
-		TMU_HAL_DEBUG_MSG(TMU_DEBUG_ERR,"%s:%d ERROR Failed to Get TMU Resources\n", __FUNCTION__, __LINE__);
-		kfree(tmu_res);
-		return TMU_HAL_STATUS_ERR;
-	}
+	TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> Get Queue Stats for Datapath Port [%d] and TMU Port:[%d]\n",
+			__FUNCTION__,dp_subif.port_id, tmu_res->tmu_port);
 
 	subif_index = tmu_hal_user_sub_interface_info + (tmu_res->tmu_port * TMU_HAL_MAX_SUB_IFID_PER_PORT) + dp_subif.subif;
 
-	if((dp_subif.port_id !=0) && (tmu_res->tmu_port == g_CPU_PortId) ) {
-		struct tmu_hal_dp_res_info res = {0};
+	if ((dp_subif.port_id !=0) && (tmu_res->tmu_port == g_CPU_PortId) ) {
+		TMU_HAL_DEBUG_MSG (TMU_DEBUG_TRACE, "<%s> For CPU Port\n", __FUNCTION__);
 		tmu_hal_dp_port_resources_get(dp_subif.port_id, &res);
 		
 		subif_index = tmu_hal_user_sub_interface_ingress_info + (res.dp_egress_res.dp_port * TMU_HAL_MAX_SUB_IFID_PER_PORT) + dp_subif.subif;
-		port_subif_index = tmu_hal_user_sub_interface_ingress_info + (res.dp_egress_res.dp_port * TMU_HAL_MAX_SUB_IFID_PER_PORT);
-		
 	}
 
-	if( (index = tmu_hal_get_user_index_from_qid(subif_index, queueid) ) == TMU_HAL_STATUS_ERR) {
+	if ( (index = tmu_hal_get_user_index_from_qid(subif_index, queueid) ) == TMU_HAL_STATUS_ERR) {
 		ret = TMU_HAL_STATUS_INVALID_QID;
 		goto CBM_RESOURCES_CLEANUP;
 	}
@@ -1506,7 +1498,10 @@ tmu_hal_update_base_wfq_sched_weight(uint16_t base_sched)
 
 		if (ilink.sie != 0) { // input is enabled
 			leaf_weights[leaf_index] = ((total_weight == 0) ? 0 : ((leaf_weights[leaf_index] * 100) / total_weight));
-			TMU_HAL_DEBUG_MSG(TMU_DEBUG_TRACE, "<%s> sched:[%d] sched_in:[%d] new weight:[%d]\n", __FUNCTION__, ilink.qsid, sched_in, leaf_weights[leaf_index]);
+			if (ilink.sit == 0) {
+				if (tmu_hal_queue_track[ilink.qsid].q_type == TMU_HAL_POLICY_WFQ && leaf_weights[leaf_index] == 0)
+					leaf_weights[leaf_index] = 1;
+			}
 			ilink.iwgt = ((leaf_weights[leaf_index]==0) ? 0:(1000 / leaf_weights[leaf_index]));
 			tmu_sched_blk_in_link_set(sched_in, &ilink);
 
@@ -2022,7 +2017,15 @@ tmu_hal_queue_param_update(const struct tmu_hal_equeue_cfg *param, uint32_t flag
 		tmu_hal_scheduler_in_weight_update(tmu_hal_queue_track[param->index].sched_input, param->weight);
 		TMU_HAL_DEBUG_MSG(TMU_DEBUG_TRACE, "<%s> tmu_hal_queue_track[param->index].prio_weight:[%d]\n", __FUNCTION__, tmu_hal_queue_track[param->index].prio_weight);
 		idx = tmu_hal_queue_track[param->index].connected_to_sched_id;
-		if (tmu_hal_sched_track[idx].policy == TMU_HAL_POLICY_WFQ) {
+		TMU_HAL_DEBUG_MSG(TMU_DEBUG_TRACE, "<%s> Scheduler Connected:[%d] Update weight on scheduler:[%d]\n", __FUNCTION__, idx, tmu_hal_sched_track[idx].omid>>3);
+		TMU_HAL_DEBUG_MSG(TMU_DEBUG_TRACE, "<%s> flags:[%d] Sched Policy:[%d]\n", __FUNCTION__, flags, tmu_hal_sched_track[idx].policy);
+		if (flags & PPA_QOS_Q_F_INGRESS) {
+			if (tmu_hal_sched_track[idx].policy == TMU_HAL_POLICY_WFQ) {
+				ret = tmu_hal_update_base_wfq_sched_weight(tmu_hal_sched_track[idx].omid>>3);
+				if (ret != TMU_HAL_STATUS_OK)
+					return TMU_HAL_STATUS_ERR;
+			}
+		} else {
 			ret = tmu_hal_update_base_wfq_sched_weight(tmu_hal_sched_track[idx].omid>>3);
 			if (ret != TMU_HAL_STATUS_OK)
 				return TMU_HAL_STATUS_ERR;
@@ -3212,7 +3215,7 @@ int32_t tmu_hal_shift_up_down_q(
 
 	/* When System default Queue is moved up/down default thresholds are set to 0x24 */
 	if (user_q_index == 0 && subif_index->user_queue[user_q_index].ecfg.drop_threshold_green_max == 0 && (!(flags & PPA_QOS_Q_F_INGRESS)))
-		q_param.drop_threshold_green_max = 0x24;
+		q_param.drop_threshold_green_max = 0x72;
 	else
 		q_param.drop_threshold_green_max = subif_index->user_queue[user_q_index].ecfg.drop_threshold_green_max;
 	q_param.drop_threshold_yellow_min = subif_index->user_queue[user_q_index].ecfg.drop_threshold_yellow_min;
@@ -3376,7 +3379,7 @@ tmu_hal_add_new_queue(
 				q_reconnect.index = q_index;				
 				q_reconnect.egress_port_number = port;
 				q_reconnect.scheduler_input =	new_sched << 3 | 0; /* highest priority leaf */
-				q_reconnect.iwgt = (tmu_hal_queue_track[q_index].prio_weight == 0) ? 1 : 1000/tmu_hal_queue_track[q_index].prio_weight;
+				q_reconnect.iwgt = (tmu_hal_queue_track[q_index].prio_weight == 0) ? 0 : 1000/tmu_hal_queue_track[q_index].prio_weight;
 				ret = tmu_hal_egress_queue_create(&q_reconnect);
 				if(cfg_shaper != 0xFF) {
 					cfgShaper.enable = true;
@@ -3407,7 +3410,7 @@ tmu_hal_add_new_queue(
 
 					/* When System default Queue is moved up/down default thresholds are set to 0x24 */
 					if(user_q_index == 0 && subif_index->user_queue[user_q_index].ecfg.drop_threshold_green_max == 0)
-						q_param.drop_threshold_green_max = 0x24;
+						q_param.drop_threshold_green_max = 0x72;
 					else
 						q_param.drop_threshold_green_max = subif_index->user_queue[user_q_index].ecfg.drop_threshold_green_max;
 					q_param.drop_threshold_yellow_min = subif_index->user_queue[user_q_index].ecfg.drop_threshold_yellow_min;
@@ -3439,7 +3442,7 @@ tmu_hal_add_new_queue(
 				/* Add the new queue to the WFQ scheduler */
 				TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"Adding new queue %d to scheduler %d\n",q_new, new_sched);
 				q_add.scheduler_input =  new_sched << 3 | 1; //next priority leaf
-				q_add.iwgt = (prio_weight == 0)?1:(1000/prio_weight) ;
+				q_add.iwgt = (prio_weight == 0)? 0 :(1000/prio_weight) ;
 				ret = tmu_hal_egress_queue_create(&q_add);
 
 			} else if(ilink.sit == 1){
@@ -4030,7 +4033,7 @@ NO_MATCH_FOUND:
 
 uint32_t tmu_hal_get_base_sched_id(uint32_t sbin, uint32_t sched_id) {
 	uint32_t sbin_temp = sbin;
-	while((sbin >> 3 != sched_id) && ((sbin >> 3) > 0)) {
+	while((sbin >> 3 != sched_id) && ((sbin >> 3) > 0 && (sbin != INVALID_SCHED_ID))) {
 		sbin_temp = sbin;
 		sbin = tmu_hal_sched_track[sbin_temp >> 3].omid;
 	}
@@ -5905,7 +5908,8 @@ int tmu_hal_add_egress_queue(
 	struct tmu_hal_equeue_cfg q_param;
 	int32_t tmuport;
 	struct tmu_egress_port_thr epth;
-
+	int add_checksum;
+	cbm_tmu_res_t *tmu_res_checksum = NULL;
 
 	TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> <-- Enter --> \n",__FUNCTION__);	
 
@@ -5943,7 +5947,7 @@ int tmu_hal_add_egress_queue(
 			needs to decide the tmu port and scheduler based on that.
 		 */	
 		if(dp_subif.subif == 0) /* for the physical interface*/ {
-			if(prio_level > high_prio_q_limit) {
+			if(prio_level < high_prio_q_limit) {
 				if(nof_of_tmu_ports > 1) {
 					base_sched = (tmu_res)->tmu_sched;
 					tmuport = (tmu_res)->tmu_port;
@@ -5974,7 +5978,7 @@ int tmu_hal_add_egress_queue(
 				schedler and tmu port is required. 
 				This selection is required for LAN port. 
 			 */
-			if(port_prio_level > high_prio_q_limit) {
+			if(port_prio_level < high_prio_q_limit) {
 				if(nof_of_tmu_ports > 1) {
 					port_sched = base_sched = (tmu_res)->tmu_sched;
 					tmuport = (tmu_res)->tmu_port;
@@ -6181,6 +6185,23 @@ int tmu_hal_add_egress_queue(
 				}
 
 			} else { /*default Q of Physical interface*/
+				/* Check and configure the QMAP table to connect to the checksum queue
+				 * FLOW ID: 00 DEC:1 ENC:1 MPE1:0 MPE2:1 EP: 7-14 CLASS: XX
+				 */
+				add_checksum = 0;
+				nof_of_tmu_ports = 0;
+				TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Checking for checksum queue on port:[%d]\n", 
+						__FUNCTION__, dp_subif.port_id);
+
+				if (cbm_dp_port_resources_get(&dp_subif.port_id, &nof_of_tmu_ports, &tmu_res_checksum, DP_F_CHECKSUM) == TMU_HAL_STATUS_OK) {
+					add_checksum = 1;
+					TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Checksum Queue present! Qid:[%d]\n",
+							__FUNCTION__, tmu_res_checksum->tmu_q);
+				} else {
+					kfree(tmu_res_checksum);
+					TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Checksum Queue NOT present!\n",
+							__FUNCTION__);
+				}
 				q_map_mask |= CBM_QUEUE_MAP_F_FLOWID_L_DONTCARE |
 					CBM_QUEUE_MAP_F_FLOWID_H_DONTCARE |
 					CBM_QUEUE_MAP_F_EN_DONTCARE |
@@ -6250,6 +6271,23 @@ int tmu_hal_add_egress_queue(
 							CBM_QUEUE_MAP_F_MPE2_DONTCARE ;
 					}
 				} else {
+					/* Check and configure the QMAP table to connect to the checksum queue
+					 * FLOW ID: 00 DEC:1 ENC:1 MPE1:0 MPE2:1 EP: 7-14 CLASS: XX
+					 */
+					add_checksum = 0;
+					nof_of_tmu_ports = 0;
+					TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Checking for checksum queue on port:[%d]\n",
+							__FUNCTION__, dp_subif.port_id);
+
+					if (cbm_dp_port_resources_get(&dp_subif.port_id, &nof_of_tmu_ports, &tmu_res_checksum, DP_F_CHECKSUM) == TMU_HAL_STATUS_OK) {
+						add_checksum = 1;
+						TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Checksum Queue present! Qid:[%d]\n",
+								__FUNCTION__, tmu_res_checksum->tmu_q);
+					} else {
+						kfree(tmu_res_checksum);
+						TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Checksum Queue NOT present!\n",
+								__FUNCTION__);
+					}
 
 					q_map_mask |= CBM_QUEUE_MAP_F_FLOWID_L_DONTCARE |
 						CBM_QUEUE_MAP_F_FLOWID_H_DONTCARE |
@@ -6285,6 +6323,15 @@ int tmu_hal_add_egress_queue(
 			TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> Set QMAP for the Ingress Q: %d\n",__FUNCTION__,res.q_ingress);
 			tmu_hal_add_q_map(res.q_ingress, CPU_PORT_ID, &q_map, q_map_mask);
 
+		}
+
+		if (add_checksum) {
+			TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE, "<%s> Adding q_map for checksum queue:[%d]\n",
+					__FUNCTION__, tmu_res_checksum->tmu_q);
+			if (tmu_hal_set_checksum_queue_map(dp_subif.port_id) != TMU_HAL_STATUS_OK) {
+				TMU_HAL_DEBUG_MSG( TMU_DEBUG_ERR, "<%s> Adding q_map for checksum queue:[%d] failed!\n",
+						__FUNCTION__, tmu_res_checksum->tmu_q);
+			}
 		}
 
 		qid_last_assigned = ++(subif_index->qid_last_assigned);
@@ -6900,7 +6947,7 @@ int tmu_hal_reconnect_q_to_high_sched_lvl(
 
 	/* When System default Queue is moved up/down default thresholds are set to 0x24 */
 	if (user_q_index == 0 && subif_index->user_queue[user_q_index].ecfg.drop_threshold_green_max == 0)
-		q_param.drop_threshold_green_max = 0x24;
+		q_param.drop_threshold_green_max = 0x72;
 	else
 		q_param.drop_threshold_green_max = subif_index->user_queue[user_q_index].ecfg.drop_threshold_green_max;
 	q_param.drop_threshold_yellow_min = subif_index->user_queue[user_q_index].ecfg.drop_threshold_yellow_min;
@@ -7416,7 +7463,7 @@ int tmu_hal_update_q_weight(
 
 	TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> priority=%d high_prio_q_limit=%d\n", __FUNCTION__, priority, high_prio_q_limit);
 	if(!(flags & PPA_QOS_Q_F_INGRESS)) {
-		if(priority > high_prio_q_limit) {
+		if(priority < high_prio_q_limit) {
 			int32_t base_sched;
 			if(nof_of_tmu_ports > 1) {
 				base_sched = (tmu_res)->tmu_sched;
@@ -7452,7 +7499,7 @@ int tmu_hal_update_q_weight(
 	q_param.index = subif_index->user_queue[index].queue_index;
 	q_param.weight = weight;
 	TMU_HAL_DEBUG_MSG(TMU_DEBUG_TRACE," <%s>: Weight= %d : qid = %d\n",__FUNCTION__, q_param.weight, q_param.index);
-	tmu_hal_queue_param_update(&q_param, 0);
+	tmu_hal_queue_param_update(&q_param, flags);
 
 	subif_index->user_queue[index].weight = weight;
 	tmu_hal_queue_track[subif_index->user_queue[index].queue_index].prio_weight = weight;
@@ -7583,7 +7630,7 @@ int tmu_hal_delete_queue(
 
 	TMU_HAL_DEBUG_MSG( TMU_DEBUG_TRACE,"<%s> priority=%d high_prio_q_limit=%d\n", __FUNCTION__, priority, high_prio_q_limit);
 	if(!(flags & PPA_QOS_Q_F_INGRESS)) {
-		if(priority > high_prio_q_limit) {
+		if(priority < high_prio_q_limit) {
 			int32_t base_sched;
 			if(nof_of_tmu_ports > 1) {
 				base_sched = (tmu_res)->tmu_sched;

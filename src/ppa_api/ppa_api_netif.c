@@ -91,6 +91,7 @@ EXPORT_SYMBOL(g_phys_port_atm_wan_vlan);
 
 PPA_LIST_HEAD manual_del_iface_list;
 EXPORT_SYMBOL(manual_del_iface_list);
+static PPA_LOCK g_manual_if_lock;
 
 static struct phys_port_info *g_phys_port_info;
 static PPA_LOCK g_phys_port_lock;
@@ -169,6 +170,18 @@ static int32_t ppa_phys_port_lookup(PPA_IFNAME ifname[PPA_IF_NAME_SIZE],
 
 	return ret;
 }
+
+void ppa_manual_if_lock_list(void)
+{
+	ppa_lock_get(&g_manual_if_lock);
+}
+EXPORT_SYMBOL(ppa_manual_if_lock_list);
+
+void ppa_manual_if_unlock_list(void)
+{
+	ppa_lock_release(&g_manual_if_lock);
+}
+EXPORT_SYMBOL(ppa_manual_if_unlock_list);
 
 /*  Network Interface Operation Functions */
 static INLINE struct netif_info *ppa_netif_alloc_item(void)
@@ -605,14 +618,13 @@ static void ppa_update_netif_mac(PPA_NETIF *netif)
 
 static void ppa_register_new_netif(PPA_NETIF *netif)
 {
-	PPA_IFNAME phy_ifname[PPA_IF_NAME_SIZE];
+	PPA_IFNAME phy_ifname[PPA_IF_NAME_SIZE] = {0};
 	PPA_IFNAME *ifname;
 	struct netif_info *p_ifinfo = NULL;
 	int f_is_lan = 0;
 	int force_wanitf = 0;
 	struct iface_list *local;
 
-	phy_ifname[0] = 0;
 	ifname = ppa_get_netif_name(netif);
 	if (ifname == NULL)
 		return;
@@ -621,13 +633,16 @@ static void ppa_register_new_netif(PPA_NETIF *netif)
 	 * explicitaly added.
 	 */
 
+	ppa_manual_if_lock_list();
 	ppa_list_for_each_entry(local, &manual_del_iface_list, node_ptr)
 		if (ppa_str_cmp(local->name, ifname)) {
+			ppa_manual_if_unlock_list();
 			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
 				  "Manually deleted[%s] cannot be auto added\n",
 				  ifname);
 			return;
 		}
+	ppa_manual_if_unlock_list();
 
 	/* Iface was already added into PPA durig init or before
 	 * creation of netif, and needs relearning after netif creation
@@ -650,7 +665,7 @@ static void ppa_register_new_netif(PPA_NETIF *netif)
 	 * to LAN group. All handling done after ppacmd init.
 	 */
 	if ((ppa_get_physical_if(netif, NULL, phy_ifname) == PPA_SUCCESS) &&
-		(ppa_strlen(phy_ifname) > 0)) {
+		(strnlen(phy_ifname, PPA_IF_NAME_SIZE) > 0)) {
 		if ((ppa_get_netif_info(phy_ifname, &p_ifinfo) == PPA_SUCCESS)
 			&& (p_ifinfo != NULL)) {
 			f_is_lan = p_ifinfo->flags & NETIF_LAN_IF;
@@ -713,7 +728,7 @@ static void ppa_unregister_new_netif(PPA_NETIF *netif)
 	}
 
 	if (ppa_memcmp(p_ifinfo->name, p_ifinfo->phys_netif_name,
-			   ppa_strlen(p_ifinfo->name)) != 0) {
+			   strnlen(p_ifinfo->name, PPA_IF_NAME_SIZE)) != 0) {
 		ppa_netif_put(p_ifinfo);
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
 			  "dynamically removing netif[%s]\n", ifname);
@@ -817,6 +832,7 @@ static void ppa_netif_up(PPA_NETIF *netif)
 		/* replace get stats function for logical interface */
 		ppa_netif_up_stats(p_ifinfo, netif);
 #endif
+		ppa_netif_put(p_ifinfo);
 	}
 }
 
@@ -843,6 +859,7 @@ static void ppa_netif_down(PPA_NETIF *netif)
 		/* reset interface get stats function for logical interface */
 		ppa_netif_down_stats(p_ifinfo, netif);
 #endif
+		ppa_netif_put(p_ifinfo);
 	}
 #ifdef CONFIG_PPA_ACCEL
 	ppa_remove_sessions_on_netif(ifname);
@@ -1006,17 +1023,9 @@ int32_t ppa_netif_add(PPA_IFNAME *ifname, int f_is_lan,
 
 	net = ppa_get_current_net_ns();
 	netif = ppa_get_netif_by_net(net, ifname);
-#if 0
-/*There may be case we want to add the interface early even before the netif creation
-will not return in that case. May be we can revisit this*/
 
-	if (netif == NULL)
-	{
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
-				"ppa_netif_add, Invalid interface name\n");
-		return PPA_EINVAL;
-	}
-#endif
+	/* NOTE: netif may be NULL, when interface added early even before creation. */
+
 	if (ppa_is_netif_bridged(netif)) {
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
 			  "netif=%s is under bridge\n", netif->name);
@@ -1028,8 +1037,8 @@ will not return in that case. May be we can revisit this*/
 	if (ppa_get_netif_info(ifname, &p_ifinfo) == PPA_SUCCESS) {
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
 			  "interface %s already exist\n", ifname);
-		if (ifname_lower && ppa_strlen(ifname_lower)
-			&& ppa_strlen(p_ifinfo->manual_lower_ifname)
+		if (ifname_lower && strnlen(ifname_lower, PPA_IF_NAME_SIZE)
+			&& strnlen(p_ifinfo->manual_lower_ifname, PPA_IF_NAME_SIZE)
 			&& strncmp(ifname_lower,
 				  p_ifinfo->manual_lower_ifname, PPA_IF_NAME_SIZE) != 0) {
 			/* conflicts and it should update its physical port id
@@ -1046,7 +1055,7 @@ will not return in that case. May be we can revisit this*/
 		return PPA_ENOMEM;
 
 	ppa_strncpy(p_ifinfo->name, ifname, sizeof(p_ifinfo->name));
-	if (ifname_lower && ppa_strlen(ifname_lower)) {
+	if (ifname_lower && strnlen(ifname_lower, PPA_IF_NAME_SIZE)) {
 		ppa_strncpy(p_ifinfo->manual_lower_ifname, ifname_lower,
 				sizeof(p_ifinfo->manual_lower_ifname)-1);
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
@@ -1159,7 +1168,7 @@ LOOP_CHECK:
 			  "phys_netif_name=%s with ifname=%s\n",
 			  p_ifinfo->phys_netif_name, ifname);
 		if (ppa_memcmp(p_ifinfo->phys_netif_name, ifname,
-				   ppa_strlen(ifname)) == 0) 
+				   strnlen(ifname, PPA_IF_NAME_SIZE)) == 0)
 			p_ifinfo->f_wanitf.flag_root_itf = 1;
 
 	} else if (ppa_if_is_veth_if(netif, NULL)) {
@@ -1439,14 +1448,7 @@ PPA_NETIF_ADD_ATM_BASED_NETIF_DONE:
 					| NETIF_VLAN_OUTER;
 				p_ifinfo->in_vlan_netif = tmp_vlan_netif[0];
 				p_ifinfo->out_vlan_netif = tmp_vlan_netif[1];
-			} else if ((p_ifinfo->vlan_layer == 1) &&
-				   (p_phys_port->vlan == 2)) {
-				p_ifinfo->outer_vid = DEFAULT_OUTER_VLAN_ID
-					| vid[0];
-				p_ifinfo->flags |= NETIF_VLAN_OUTER;
-				p_ifinfo->out_vlan_netif = tmp_vlan_netif[0];
-			} else if ((p_ifinfo->vlan_layer == 1) &&
-				   (p_phys_port->vlan == 1)) {
+			} else if (p_ifinfo->vlan_layer == 1) {
 				p_ifinfo->inner_vid = vid[0];
 				p_ifinfo->flags |= NETIF_VLAN_INNER;
 				p_ifinfo->in_vlan_netif = tmp_vlan_netif[0];
@@ -1486,7 +1488,7 @@ PPA_NETIF_ADD_ATM_BASED_NETIF_DONE:
 		if ((dp_get_netif_subifid(netif, NULL, NULL, NULL, &dp_subif,
 					  DP_F_SUBIF_LOGICAL)) == PPA_SUCCESS) {
 			p_ifinfo->subif_id |= (dp_subif.subif) & 0xF00;
-		} else if (strlen(p_ifinfo->manual_lower_ifname) == 0) {
+		} else if (strnlen(p_ifinfo->manual_lower_ifname, PPA_IF_NAME_SIZE) == 0) {
 			/*  not the mac vlan interfaces */
 			dp_subif.subif = -1;
 
@@ -1536,6 +1538,7 @@ PPA_NETIF_ADD_ATM_BASED_NETIF_DONE:
 					vlan_info.vlan_id = p_ifinfo->inner_vid;
 					vlan_info.ctag_ins = 1;
 					vlan_info.ctag_rem = 1;
+					vlan_info.stag_rem = 1;
 				} else if (vlan_info.vlan_type ==
 					   PPA_VLAN_PROTO_8021AD) {
 					vlan_info.stag_vlan_id =
@@ -1676,11 +1679,13 @@ PPA_ADD_NETIF_DONE:
 		ppa_netif_free_item(p_ifinfo);
 
 	if (add_flag_fail) {
-		printk(KERN_INFO"%s Failed!! netif=%s\n", __FUNCTION__, p_ifinfo->netif->name);
+		printk(KERN_INFO"%s Failed!! ifname=%s (netif=%px)\n",
+				__FUNCTION__, ifname, p_ifinfo->netif);
 		return PPA_FAILURE;
 	}
 	
-	printk(KERN_INFO"%s Success for netif=%s\n", __FUNCTION__, p_ifinfo->netif->name);
+	printk(KERN_INFO"%s Success for ifname=%s (netif=%px)\n",
+				__FUNCTION__, ifname, p_ifinfo->netif);
 	return PPA_SUCCESS;
 }
 
@@ -1692,6 +1697,7 @@ void ppa_netif_remove(PPA_IFNAME *ifname, int f_is_lan)
 	dp_subif_t dp_subif = {0};
 	PPA_CLASS_RULE *class_rule = NULL;
 	PPA_BR_PORT_INFO port_info = {0};
+	PPA_OUT_VLAN_INFO vlan_info = {0};
 #endif
 #if IS_ENABLED(CONFIG_PPA_EXT_PKT_LEARNING)
 	PPA_NETIF *netif_tmp = NULL;
@@ -1730,9 +1736,16 @@ void ppa_netif_remove(PPA_IFNAME *ifname, int f_is_lan)
 		}
 
 		if ((p_ifinfo->flags & NETIF_VLAN_INNER) ||
-			(p_ifinfo->flags & NETIF_VLAN_OUTER)) {
-			if ((strlen(p_ifinfo->manual_lower_ifname) == 0) &&
+		    (p_ifinfo->flags & NETIF_VLAN_OUTER)) {
+			if ((p_ifinfo->netif &&
+			     ppa_if_is_vlan_if(p_ifinfo->netif, NULL)) &&
 			    (p_ifinfo->flags & NETIF_PHYS_PORT_GOT)) {
+
+				vlan_info.port_id = p_ifinfo->phys_port;
+				vlan_info.subif_id = ((p_ifinfo->subif_id & 0xF00) >> 8);
+				if (ppa_hsel_del_outer_vlan_entry(&vlan_info, 0, PAE_HAL) != PPA_SUCCESS)
+					ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "hsel_del_outer_vlan_entry fail\n");
+
 				/* Not the mac vlan interfaces */
 				oner = dp_get_module_owner(p_ifinfo->phys_port);
 
@@ -1789,6 +1802,8 @@ void ppa_netif_remove(PPA_IFNAME *ifname, int f_is_lan)
 		}
 #endif
 #endif
+		printk(KERN_INFO"%s Success for ifname=%s (netif=%px)\n",
+				__FUNCTION__, ifname, p_ifinfo->netif);
 		ppa_netif_put(p_ifinfo);
 	}
 }
@@ -2146,7 +2161,7 @@ int32_t ppa_netif_update(PPA_NETIF *netif, PPA_IFNAME *ifname)
 
 	/* save the force_wanitf flag */
 	force_wantif = p_info->f_wanitf.flag_force_wanitf;
-	if (ppa_strlen(p_info->manual_lower_ifname))
+	if (strnlen(p_info->manual_lower_ifname, PPA_IF_NAME_SIZE))
 		ppa_strncpy(manual_lower_ifname, p_info->manual_lower_ifname,
 				sizeof(manual_lower_ifname));
 	else
@@ -2292,8 +2307,7 @@ int32_t ppa_api_netif_manager_init(void)
 				p_phys_port_info = ppa_phys_port_alloc_item();
 				if (!p_phys_port_info)
 					goto PPA_API_NETIF_MANAGER_INIT_FAIL;
-				strcpy(p_phys_port_info->ifname,
-					   if_info.ifname);
+				ppa_strncpy(p_phys_port_info->ifname, if_info.ifname, PPA_IF_NAME_SIZE);
 				switch ((if_info.if_flags &
 					 PPA_PHYS_PORT_FLAGS_MODE_MASK)) {
 				case PPA_PHYS_PORT_FLAGS_MODE_LAN:
@@ -2330,6 +2344,7 @@ int32_t ppa_api_netif_manager_init(void)
 	if (ppa_is_init() && ppa_directpath_port_add_fn)
 		ppa_directpath_port_add_fn();
 #endif
+	ppa_lock_init(&g_manual_if_lock);
 	PPA_LIST_HEAD_INIT(&manual_del_iface_list);
 	ppa_register_netdevice_notifier(&ppa_netdevice_notifier);
 	return ret;

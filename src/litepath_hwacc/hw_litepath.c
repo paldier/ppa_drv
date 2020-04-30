@@ -67,7 +67,7 @@ static int proc_read_hwlitepath_pkt_ctrs_seq_open(struct inode *inode, struct fi
 static ssize_t proc_reset_hwlitepath_pkt_ctrs(struct file *file, const char __user *buf, size_t count, loff_t *data);
 static int proc_read_hwlitepath_pkt_ctrs(struct seq_file *seq, void *v);
 uint32_t ctr = 0;
-#define use_Directpath 1
+#define use_Directpath 0
 
 #if use_Directpath
 PPA_DIRECTPATH_CB litepath_cb;

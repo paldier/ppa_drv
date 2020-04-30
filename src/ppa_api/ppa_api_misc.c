@@ -715,7 +715,7 @@ long ppa_dev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			if ( ppa_netif_start_iteration(&pos, &ifinfo) == PPA_SUCCESS ) {
 				do {
 					if ( (ifinfo->flags & flag_mask) ) {
-						strcpy(cmd_info->all_if_info.ifinfo[i].ifname, ifinfo->name);
+						ppa_strncpy(cmd_info->all_if_info.ifinfo[i].ifname, ifinfo->name, PPA_IF_NAME_SIZE);
 						cmd_info->all_if_info.ifinfo[i].if_flags = if_flags;
 #if defined(PPA_IF_MIB) && PPA_IF_MIB
 						cmd_info->all_if_info.ifinfo[i].acc_rx = ifinfo->hw_accel_stats.rx_bytes - ifinfo->prev_clear_acc_rx;
@@ -760,7 +760,7 @@ long ppa_dev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			}
 			mc_group.num_ifs = idx; /*  downstream interfce number */
 
-			if ( ppa_strlen(cmd_info->mc_add_info.src_ifname) ) {
+			if ( strnlen(cmd_info->mc_add_info.src_ifname, PPA_IF_NAME_SIZE) ) {
 				/*  upstream interfce: 2*/
 				mc_group.src_ifname = cmd_info->mc_add_info.src_ifname;
 			}
@@ -1767,11 +1767,6 @@ int32_t ppa_ioctl_bridge_enable(unsigned int cmd, unsigned long arg, PPA_CMD_DAT
 
 	res = ppa_hook_bridge_enable( cmd_info->br_enable_info.bridge_enable, cmd_info->br_enable_info.flags);
 
-	if ( res != PPA_SUCCESS ) {
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"ppa_ioctl_bridge_enable fail\n");
-		res = PPA_FAILURE;
-	}
-
 	return res;
 #endif /*CONFIG_PPA_BR_MAC_LEARNING*/
 	return PPA_SUCCESS;
@@ -1790,10 +1785,6 @@ int32_t ppa_ioctl_get_bridge_enable_status(unsigned int cmd, unsigned long arg, 
 
 	res = ppa_hook_get_bridge_status( &cmd_info->br_enable_info.bridge_enable, cmd_info->br_enable_info.flags);
 
-	if ( res != PPA_SUCCESS ) {
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"ppa_ioctl_get_bridge_enable_status fail\n");
-		res = PPA_FAILURE;
-	}
 	if ( ppa_copy_to_user( (void *)arg, &cmd_info->br_enable_info, sizeof(cmd_info->br_enable_info)) != 0 )
 		return PPA_FAILURE;
 
@@ -2171,12 +2162,6 @@ int32_t ppa_ioctl_set_ppe_fastpath_enable(unsigned int cmd, unsigned long arg, P
 		cmd_info->ppe_fastpath_enable_info.ppe_fastpath_enable,
 		cmd_info->ppe_fastpath_enable_info.flags);
 
-	if ( res != PPA_SUCCESS )
-	{
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"ppa_ioctl_get_ppe_fastpath_enable fail\n");
-		res = PPA_FAILURE;
-	}
-
 	return res;
 }
 
@@ -2195,11 +2180,6 @@ int32_t ppa_ioctl_get_ppe_fastpath_enable(unsigned int cmd, unsigned long arg, P
 			&cmd_info->ppe_fastpath_enable_info.ppe_fastpath_enable,
 			cmd_info->ppe_fastpath_enable_info.flags);
 
-	if ( res != PPA_SUCCESS )
-	{
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"ppa_ioctl_get_ppe_fastpath_enable fail\n");
-		res = PPA_FAILURE;
-	}
 	if ( ppa_copy_to_user( (void *)arg, &cmd_info->ppe_fastpath_enable_info,
 			sizeof(cmd_info->ppe_fastpath_enable_info)) != 0 )
 		return PPA_FAILURE;
@@ -2432,10 +2412,6 @@ void ppa_reg_expfn(void)
 #if IS_ENABLED(CONFIG_PPA_API_DIRECTCONNECT)
 	ppa_reg_export_fn(PPA_DISCONN_IF_FN, ppa_disconn_if, "ppa_disconn_if",
 		(void**)&ppa_hook_disconn_if_fn, ppa_disconn_if_rpfn );
-#if IS_ENABLED(CONFIG_PPA_QOS) && IS_ENABLED(WMM_QOS_CONFIG)
-	ppa_reg_export_fn(PPA_REG_CLASS2PRIO_FN, ppa_register_for_qos_class2prio, "ppa_register_for_qos_class2prio",
-		(void**)&ppa_register_qos_class2prio_hook_fn, ppa_register_for_qos_class2prio_rpfn );
-#endif
 #endif
 #if IS_ENABLED(CONFIG_PPA_API_DIRECTPATH)
 	ppa_reg_export_fn(PPA_PHYS_PORT_ADD_FN, ppa_phys_port_add, "ppa_phys_port_add",

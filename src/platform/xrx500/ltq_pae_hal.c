@@ -2970,6 +2970,7 @@ void get_phys_port_info(uint32_t port, uint32_t *p_flags,
 			case 15: /*eth1*/
 				if( g_port_map & ( 1 << port)) { 	
 					*p_flags = PPA_PHYS_PORT_FLAGS_MODE_ETH_WAN_VALID;
+					*p_flags |= PPA_PHYS_PORT_FLAGS_OUTER_VLAN;
 				}
 				break;
 			default:
@@ -3090,7 +3091,7 @@ uint8_t allocate_meter(uint8_t rx_id, uint8_t tx_id)
 
 	param.nMeterId = find_first_zero_bit(&meter_bitmap, METER_ID_MAX);
 	param.bEnable = true;
-	param.eMtrType =	GSW_QOS_Meter_srTCM;
+	param.eMtrType = GSW_QOS_Meter_srTCM;
         /* Committed Burst Size (CBS [Bytes]). */
 	param.nCbs = 0x9300;
  	/** Excess Burst Size (EBS [Bytes]). */
@@ -3246,8 +3247,9 @@ int32_t get_session_nMeterId(struct uc_session_node *p_item,
 		if (txifname[0])
 			tx_id = get_iface_idx(txifname, 1);
 	}
-	if (rx_id == 0 || tx_id == 0) {
-		dbg("\nrx_id or tx_id are NULL\n");
+
+	if ((rx_id == 0) && (tx_id == 0)) {
+		dbg("\nrx_id and tx_id are NULL\n");
 		return PPA_SUCCESS;
 	}
 
@@ -3302,8 +3304,8 @@ int32_t put_session_nMeterId(struct uc_session_node *p_item)
 		}
 	}
 
-	if (rx_id == 0 || tx_id == 0) {
-		dbg("\nrx_id or tx_id are NULL\n");
+	if ((rx_id == 0) && (tx_id == 0)) {
+		dbg("\nrx_id and tx_id are NULL\n");
 		return PPA_SUCCESS;
 	}
 
@@ -4433,6 +4435,7 @@ int32_t add_vlan_entry(PPA_OUT_VLAN_INFO *vlan_entry)
 	int ret=0;
 	GSW_PCE_EgVLAN_Entry_t egV={0};
 	GSW_SVLAN_cfg_t svlancfg={0};
+	GSW_SVLAN_portCfg_t svlan_portcfg = {0};
 
 	if(vlan_entry->port_id < MAX_PAE_PORTS) {
 		/* The sub interface id 16 is always used for no vlan acion behavior on the interface
@@ -4478,7 +4481,18 @@ int32_t add_vlan_entry(PPA_OUT_VLAN_INFO *vlan_entry)
 			egV.nPortId,egV.nIndex, egV.bEgVLAN_Action, egV.bEgSVidRem_Action, egV.bEgCVidRem_Action, 
  			egV.nEgSVid,egV.bEgCVidIns_Action,egV.bEgSVidIns_Action,egV.nEgCVid);
 		}
-	
+
+		/* Enable STAG VLAN Support for the port, where both STAG and CTAG VLAN insert action applied. */
+		if (vlan_entry->stag_ins && vlan_entry->ctag_ins) {
+			svlan_portcfg.nPortId = vlan_entry->port_id;
+			if (ltq_try_gswapi_kioctl(GSW_SVLAN_PORT_CFG_GET, (unsigned int)&svlan_portcfg) >= GSW_statusOk) {
+				svlan_portcfg.bSVLAN_TagSupport = 1;
+				if (ltq_try_gswapi_kioctl(GSW_SVLAN_PORT_CFG_SET, (unsigned int)&svlan_portcfg) < GSW_statusOk) {
+					dbg("GSW_SVLAN_PORT_CFG_SET returned faulure\n");
+				}
+			} else
+				dbg("GSW_SVLAN_PORT_CFG_GET returned faulure\n");
+		}
 	}
 	return ret;
 }
@@ -4517,6 +4531,7 @@ int32_t del_vlan_entry(PPA_OUT_VLAN_INFO *vlan_entry)
 
 	/* set the egress vlan tratment for port i index 0 as untag all*/
 	egV.nPortId = vlan_entry->port_id;
+	egV.nIndex = vlan_tbl_base[vlan_entry->port_id] + vlan_entry->subif_id;
 	egV.bEgVLAN_Action = 0;
 	if((ltq_try_gswapi_kioctl( GSW_PCE_EG_VLAN_ENTRY_WRITE,(unsigned int)&egV)) < GSW_statusOk) {
 		dbg("GSW_PCE_EG_VLAN_CFG_SET	returned faulure\n");

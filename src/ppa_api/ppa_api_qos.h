@@ -73,7 +73,7 @@ uint32_t inggrp2flags(PPA_QOS_INGGRP inggrp)
 typedef struct qos_ingggrp_list_item {
 	struct qos_inggrp_list_item         *next;
 	PPA_ATOMIC                          count;
-	char                                ifname[16];/*!< Ingress Interface name corresponding to a Ingress QoS group*/
+	char                                ifname[PPA_IF_NAME_SIZE];/*!< Ingress Interface name corresponding to a Ingress QoS group*/
 	PPA_QOS_INGGRP                      ingress_group;/*!< Ingress QoS Group*/
 	uint32_t                            flowId;/*!< FlowId value for a particular ingress group*/
 	uint32_t                            flowId_en;/*!< FlowId enable/disable*/
@@ -95,8 +95,8 @@ typedef struct qos_ingggrp_list_item {
 typedef struct qos_shaper_list_item {
 	struct qos_shaper_list_item            	*next;
 	PPA_ATOMIC                              	count;
-	char                        		ifname[16];/*!< Interface name on which the Shaper is set*/
-	char  		                        dev_name[16];
+	char                        		ifname[PPA_IF_NAME_SIZE];/*!< Interface name on which the Shaper is set*/
+	char  		                        dev_name[PPA_IF_NAME_SIZE];
 	int32_t                       		shaperid;/*!< Logical shaper Id*/
 	PPA_QOS_SHAPER_CFG                 		shaper;/*!< Shaper Properties */
 	uint32_t                     		portid;/*!< Portid*/
@@ -174,8 +174,8 @@ int32_t ppa_qos_create_c2p_map_for_wmm(PPA_IFNAME ifname[16],uint8_t c2p[]);
 typedef struct qos_queue_list_item {
         struct qos_queue_list_item                      *next;
         PPA_ATOMIC                                      count;
-        char                                    ifname[16];/*!< Interface name on which the Queue is modified*/
-        char                                    dev_name[16];/*!< Interface name on which the Queue is modified*/
+        char                                    ifname[PPA_IF_NAME_SIZE];/*!< Interface name on which the Queue is modified*/
+        char                                    dev_name[PPA_IF_NAME_SIZE];/*!< Interface name on which the Queue is modified*/
         char                                    tc_map[MAX_TC_NUM];/*!<Which all Traffic Class(es) map to this Queue*/
         uint8_t                                 tc_no;/*!<Nunber of Traffic Class(es) map to this Queue*/
         uint8_t                                 intfId_en;/*!<Enable/Disable for flow Id + tc bits used for VAP's & Vlan interfaces*/

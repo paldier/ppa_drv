@@ -664,6 +664,10 @@ static uint32_t ppa_form_capability_list(struct uc_session_node * p_item)
 #if IS_ENABLED(CONFIG_INTEL_IPQOS_MPE_DS_ACCEL)
 		if(!(p_item->flag2 & SESSION_FLAG2_DS_MPE_QOS))
 #endif
+		/* Since map-e sessions need to be configured in mpe,
+	  	 and pae has more weigtage for IPv4 session.
+			 we should not mark map-e sessions as IPv4 sessions */
+		if ( !ppa_is_MapESession(p_item))
 			p_item->caps_list[total_caps++].cap = SESS_IPV4;
 	} else {
 		p_item->caps_list[total_caps++].cap = SESS_IPV6;
@@ -677,7 +681,10 @@ static uint32_t ppa_form_capability_list(struct uc_session_node * p_item)
 	if ( ppa_is_6rdSession(p_item)) {
 		p_item->caps_list[total_caps++].cap = TUNNEL_6RD;
 	} else if ( ppa_is_DsLiteSession(p_item)) {
-		p_item->caps_list[total_caps++].cap = TUNNEL_DSLITE;
+		if ( ppa_is_MapESession(p_item))
+			p_item->caps_list[total_caps++].cap = TUNNEL_MAP_E;
+		else
+			p_item->caps_list[total_caps++].cap = TUNNEL_DSLITE;
 #if defined(L2TP_CONFIG) && L2TP_CONFIG
 	} else if (p_item->flags & SESSION_VALID_PPPOL2TP) {
 		p_item->caps_list[total_caps++].cap =
@@ -748,6 +755,41 @@ int32_t ppa_is_hal_registered_for_all_caps(struct uc_session_node * p_item)
 }
 
 /*****************************************************************************************
+// This is to select a specified hal for all capabilities, required for a session.
+*****************************************************************************************/
+static int32_t ppa_select_specified_hal_for_all_caps(uint8_t start, uint8_t num_entries,
+		PPA_HSEL_CAP_NODE *caps_list, PPA_HAL_ID hal_id)
+{
+	int ret = PPA_SUCCESS;
+	uint32_t cap_idx;
+	bool hal_id_found;
+
+	/* for each capability find out the specificed hal */
+	for (cap_idx = start; cap_idx < (start + num_entries); cap_idx++) {
+		caps_list[cap_idx].hal_id = 0;
+		caps_list[cap_idx].wt = 0;
+		hal_id_found = false;
+
+		while (ppa_select_hals_from_caplist(cap_idx, 1, caps_list) == PPA_SUCCESS) {
+			if (caps_list[cap_idx].hal_id == hal_id) {
+				hal_id_found = true;
+				break;
+			}
+		}
+
+		if (!hal_id_found) {
+			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
+				"<%s : %u> hal_id=%d not found for capability idx %u\n"
+				,__func__, __LINE__, hal_id, cap_idx);
+			ret = PPA_FAILURE;
+			break;
+		}
+	}
+
+	return ret;
+}
+
+/*****************************************************************************************
 // ppa_api_session.c will call this when a session is getting added
 *****************************************************************************************/
 int32_t ppa_hsel_add_routing_session(struct uc_session_node * p_item, PPA_BUF *skb,
@@ -758,7 +800,7 @@ int32_t ppa_hsel_add_routing_session(struct uc_session_node * p_item, PPA_BUF *s
 	// group the capabilities based on first regisrted HAL*/
 
 	uint32_t num_caps = 0, i, j, k, l;
-	uint8_t f_more_hals = 0, found_SW_HAL = 0, cap_idx, cur_cap;
+	uint8_t f_more_hals = 0;
 	uint32_t pret = -1;
 	PPA_ROUTING_INFO route;
 #if defined(L2TP_CONFIG) && L2TP_CONFIG
@@ -805,26 +847,13 @@ int32_t ppa_hsel_add_routing_session(struct uc_session_node * p_item, PPA_BUF *s
 	/////////////////////////////////////////////////////////////// */
 
 	if (only_SW_acc) { /* HW Acc disabled using setppefp -f 0 */
-		for (cap_idx = 0; cap_idx < num_caps; ++cap_idx) {
-NEXT_HAL:
-			if (ppa_select_hals_from_caplist(cap_idx, num_caps, p_item->caps_list) == PPA_SUCCESS) {
-				for (cur_cap = 0; cur_cap < num_caps; ++cur_cap) {
-					if (p_item->caps_list[cur_cap].hal_id == SWAC_HAL) {
-						found_SW_HAL = 1;
-						ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
-						"<%s : %u> SW HAL found, for capidx: %u\n"
-						,__func__, __LINE__, cap_idx);
-						break;
-					}
-				}
-				if (!found_SW_HAL)
-					goto NEXT_HAL;
-				else
-					break;
-			}
-		}
-		if (!found_SW_HAL)
+		ret = ppa_select_specified_hal_for_all_caps(0, num_caps, p_item->caps_list, SWAC_HAL);
+		if (ret != PPA_SUCCESS) {
+			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
+				"<%s : %u> Only SWAC_HAL cannot accelerate session %px!\n",
+				__func__, __LINE__, p_item);
 			return PPA_FAILURE;
+		}
 	} else if (ppa_select_hals_from_caplist(0, num_caps, p_item->caps_list) !=
 			PPA_SUCCESS) {
 		return PPA_FAILURE;
@@ -834,13 +863,15 @@ NEXT_HAL:
 	if (p_item->tx_if && ppa_get_netif_info(p_item->tx_if->name, &tx_ifinfo) != PPA_SUCCESS)
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s %d failed to get the tx_ifinfo!!!\n", __FUNCTION__, __LINE__);
 
-	if (!only_SW_acc && (p_item->flag2 & SESSION_FLAG2_CPU_BOUND) && (p_item->flags & SESSION_VALID_PPPOE) && !ppa_is_TunneledSession(p_item)) {
+	if (!only_SW_acc && (p_item->flag2 & SESSION_FLAG2_CPU_BOUND) && (p_item->flags & (SESSION_VALID_PPPOE
+		| SESSION_VALID_VLAN_INS | SESSION_VALID_VLAN_RM)) && !ppa_is_TunneledSession(p_item)) {
 		if (ppa_netif_lookup("lite0", &hw_lp_ifinfo) == PPA_SUCCESS) {
 			hw_litepath_dest_ifid = hw_lp_ifinfo->phys_port;
 			hw_litepath_available = true;
+			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "<%s> hwlitepath available!!\n", __func__);
 			ppa_netif_put(hw_lp_ifinfo);
 		} else {
-			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"lite0 is not added to PPA!, SW Path to be used for CPU Bound traffic\n");
+			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "netif lookup failed for lite0!, try adding lite0 to PPA LAN\n");
 		}
 	}
 
@@ -864,6 +895,7 @@ NEXT_HAL:
 #if IS_ENABLED(CONFIG_INTEL_IPQOS_MPE_DS_ACCEL)
 			case MPE_DS_QOS:
 #endif
+			case TUNNEL_MAP_E:
 				/* Check if session is GRE tunnel mixed with others */
 				if (IS_GRE_MIX_CAP_REQUIRED(p_item)) {
 					/* Only MPE full processing supported */
@@ -955,7 +987,7 @@ NEXT_HAL:
 
 							route.tnnl_info.tx_dev = p_item->tx_if;
 
-							if (ppa_add_tunnel_tbl_entry(&route.tnnl_info) != PPA_SUCCESS) {
+							if (!ppa_is_MapESession(p_item) && ppa_add_tunnel_tbl_entry(&route.tnnl_info) != PPA_SUCCESS) {
 								goto MTU_ERROR;
 							}
 							p_item->tunnel_idx = route.tnnl_info.tunnel_idx;
@@ -1190,7 +1222,12 @@ MTU_ERROR:
 			case TUNNEL_GRE_US:
 
 				/* Create the session metadata (eg: Template buffer) */
-				ppa_hsel_add_sess_meta(&route, skb, tx_ifinfo, p_item->caps_list[i].hal_id);
+				ret = ppa_hsel_add_sess_meta(&route, skb, tx_ifinfo, p_item->caps_list[i].hal_id);
+				if (ret != PPA_SUCCESS) {
+					ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s %d add complement session meta failed\n", __FUNCTION__, __LINE__);
+					ret = PPA_FAILURE;
+					break;
+				}
 
 #if IS_ENABLED(CONFIG_PPA_MPE_IP97)
 			case TUNNEL_IPSEC_DS:
@@ -1199,6 +1236,7 @@ MTU_ERROR:
 					/* Session_meta addition not neded for Security Association, but route needs to be added */
 					if ((ret = ppa_hsel_add_complement(&route, 0, p_item->caps_list[i].hal_id)) != PPA_SUCCESS) {
 						ppa_hsel_del_sess_meta(&route, p_item->caps_list[i].hal_id);
+						ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s %d add complement session failed\n", __FUNCTION__, __LINE__);
 						ret = PPA_FAILURE;
 					}
 				}
@@ -1254,6 +1292,14 @@ MTU_ERROR:
 			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s %d Trying to find next eligible HAL candidate..\n",__FUNCTION__, __LINE__);
 			/*find the next HAL registred for this capability*/
 			if (ppa_select_hals_from_caplist(i, j, p_item->caps_list) != PPA_SUCCESS) {
+				/* Workaround : try for L2TP full processing in SAE */
+				if ((p_item->caps_list[i].cap == TUNNEL_L2TP_US) && (i > 0)) {
+					if (ppa_select_specified_hal_for_all_caps(0, num_caps, p_item->caps_list, SWAC_HAL) == PPA_SUCCESS) {
+						i = 0;
+						continue;
+					}
+				}
+
 				/*this session cannot be added to the HW*/
 				ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s %d No more HALS registered for this capability\n", __FUNCTION__, __LINE__);
 				if (tx_ifinfo)
@@ -1426,6 +1472,7 @@ void ppa_hsel_del_routing_session(struct uc_session_node *p_item)
 #if IS_ENABLED(CONFIG_INTEL_IPQOS_MPE_DS_ACCEL)
 			case MPE_DS_QOS:
 #endif
+			case TUNNEL_MAP_E:
 				{
 					/* Check if session is GRE tunnel mixed with others */
 					if (IS_GRE_MIX_CAP_REQUIRED(p_item)) {
@@ -1459,7 +1506,9 @@ void ppa_hsel_del_routing_session(struct uc_session_node *p_item)
 						if(route.tnnl_info.tunnel_idx != ~0)
 #endif
 						{
-							printk("\n%s,%d, ppa_del_tunnel_tbl_entry called, pitem: %px, flag: %x, flag2: %x\n", __func__,__LINE__, p_item, p_item->flags, p_item->flag2);
+							ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
+									"\n%s,%d, ppa_del_tunnel_tbl_entry called, pitem: %px, flag: %x, flag2: %x\n",
+									__func__,__LINE__, p_item, p_item->flags, p_item->flag2);
 							ppa_del_tunnel_tbl_entry(&route.tnnl_info);
 
 						}

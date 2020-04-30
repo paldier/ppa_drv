@@ -144,7 +144,7 @@ int ppa_test_automation_get_if_mac(char *ifname, char *mac)
 
     /* name of the card */
     /***** How are NIC devices named in SFU? *****/
-    strcpy(ifr.ifr_name,ifname);
+    strcpy_s(ifr.ifr_name, 20, ifname);
 
     res=ioctl(sock, SIOCGIFHWADDR, &ifr);
     if (res<0)
@@ -1286,7 +1286,7 @@ pcap_t *pcap_open_live(const char *source, int snaplen, int promisc, int to_ms, 
     if (netfd == -1)
     {
         printf("Socket opening error!");
-        if(errbuf) strcpy(errbuf, "Socket opening error!\n");
+        if(errbuf) strcpy_s(errbuf, 25, "Socket opening error!\n");
         return NULL;
     }
 
@@ -1297,7 +1297,7 @@ pcap_t *pcap_open_live(const char *source, int snaplen, int promisc, int to_ms, 
     if((ioctl(netfd, SIOCGIFINDEX, &ppa_test_automation_ifr)) == -1)
     {
         printf("Error getting Interface index for interface %s!\n", ppa_test_automation_ifr.ifr_name);
-        if(errbuf) strcpy(errbuf, "Error getting Interface index for interface!\n");
+        if(errbuf) strcpy_s(errbuf, 50, "Error getting Interface index for interface!\n");
         return NULL;
     }
 
@@ -1310,7 +1310,7 @@ pcap_t *pcap_open_live(const char *source, int snaplen, int promisc, int to_ms, 
     if (bind(netfd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
     {
         printf("Bind Error\n");
-        if(errbuf) strcpy(errbuf, "bind error!\n");
+        if(errbuf) strcpy_s(errbuf, 15, "bind error!\n");
         close(netfd);
         return NULL;
     }

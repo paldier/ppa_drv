@@ -165,7 +165,7 @@ static int proc_read_port_mirror(struct seq_file *seq, void *v)
     char devname[IFNAMSIZ + 1] = {0};
 
     if ( g_mirror_netdev == NULL )
-        strcpy(devname, "disable");
+        strncpy(devname, "disable", 8);
     else
         strncpy(devname, g_mirror_netdev->name, IFNAMSIZ);
 

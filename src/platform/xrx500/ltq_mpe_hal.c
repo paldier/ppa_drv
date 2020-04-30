@@ -453,6 +453,9 @@ static int32_t mpe_hal_generic_hook(PPA_GENERIC_HOOK_CMD cmd, void *buffer, uint
 			pr_err("ppa_drv_register_cap returned failure for capability MPE_DS_QOS!!!\n");
 		}
 #endif
+		if((res = ppa_drv_register_cap(TUNNEL_MAP_E, 1, MPE_HAL)) != PPA_SUCCESS) {
+			pr_err("ppa_drv_register_cap returned failure for capability TUNNEL_MAP_E!!!\n");
+		}
 		/* init the multicast template buffer hooks*/
 		ppa_tmplbuf_register_hooks();		
 		 
@@ -466,7 +469,7 @@ static int32_t mpe_hal_generic_hook(PPA_GENERIC_HOOK_CMD cmd, void *buffer, uint
 	} 
 	case PPA_GENERIC_HAL_GET_HAL_VERSION: {
 		PPA_VERSION *v = (PPA_VERSION *)buffer;
-		strcpy(v->version, "1.0.1"); 
+		strncpy(v->version, "1.0.1", 6); 
 		return PPA_SUCCESS;
 	}
 	case PPA_GENERIC_HAL_GET_PPE_FW_VERSION: {
@@ -650,7 +653,8 @@ static char * inet_ntop6(const unsigned char *src, char *dst, u32 size) {
     if ((tp - tmp) > size) {
         return (NULL);
     }
-    strcpy(dst, tmp);
+    strncpy(dst, tmp, (size - 1));
+    dst[size - 1] = '\0';
     return (dst);
 }
 
@@ -1390,11 +1394,11 @@ int32_t mpe_hal_add_routing_entry(PPA_ROUTING_INFO *route)
 		hIpv4.key.srcport = p_item->pkt.src_port;
 		hIpv4.key.dstport = p_item->pkt.dst_port;
 
- 		dbg(KERN_INFO"key :extn	 = %d\n",hIpv4.key.extn);
+		dbg(KERN_INFO"key :extn	 = %d\n",hIpv4.key.extn);
 		dbg(KERN_INFO"key :srcip	 = %s\n",inet_ntoa(hIpv4.key.srcip));
- 		dbg(KERN_INFO"key :dstip	 = %s\n",inet_ntoa(hIpv4.key.dstip));
- 		dbg(KERN_INFO"key :dstport	 = %d\n",hIpv4.key.srcport);
- 		dbg(KERN_INFO"key :srcport	 = %d\n",hIpv4.key.dstport);
+		dbg(KERN_INFO"key :dstip	 = %s\n",inet_ntoa(hIpv4.key.dstip));
+		dbg(KERN_INFO"key :srcport	 = %d\n",hIpv4.key.srcport);
+		dbg(KERN_INFO"key :dstport	 = %d\n",hIpv4.key.dstport);
 
 		if(g_GenConf->fw_cmp_tbl_base[0]) {
 			if((ret = mpe_hal_add_session_ipv4((struct fw_compare_hash_auto_ipv4 *)g_GenConf->fw_cmp_tbl_base[0],
@@ -2342,13 +2346,13 @@ int32_t mpe_hal_ipsec_test(void)
 	xfrm->id.spi = 0x40002016;
 	xfrm->id.proto = 50;
 
-	strcpy(xfrm_crypt->alg_name, "cbc(aes)");
+	strncpy(xfrm_crypt->alg_name, "cbc(aes)", 9);
 	xfrm_crypt->alg_key_len = 128;
 	xfrm_crypt->alg_key[0] = "c994ab76 99a0a6d2 7667ab17 2b00f96f";
 
 	xfrm->ealg = xfrm_crypt;
 
-	strcpy(xfrm_auth->alg_name, "hmac(sha1)");
+	strncpy(xfrm_auth->alg_name, "hmac(sha1)", 11);
 	xfrm_auth->alg_key_len = 160; /*5 * 4;*/
 	xfrm_auth->alg_key[0] = "3b3b34bb 069198a7 a63a1b90 a45d1c27 9c3f4e30";
 
@@ -2373,13 +2377,13 @@ int32_t mpe_hal_ipsec_test(void)
 	xfrm_out->id.spi = 0x069f2b79;
 	xfrm_out->id.proto = 50;
 
-	strcpy(xfrm_crypt->alg_name, "cbc(aes)");
+	strncpy(xfrm_crypt->alg_name, "cbc(aes)", 9);
 	xfrm_crypt->alg_key_len = 128; /* 4 * 4; */
 	xfrm_crypt->alg_key[0] = "0a3a5878 1831add8 5e5ee250 12569e35";
 
 	xfrm_out->ealg = xfrm_crypt;
 
-	strcpy(xfrm_auth->alg_name, "hmac(sha1)");
+	strncpy(xfrm_auth->alg_name, "hmac(sha1)", 11);
 	xfrm_auth->alg_key_len = 160; /*5 * 4;*/
 	xfrm_auth->alg_key[0] = "79f4877b aabe4bf4 b72c0a33 b7c11924 8d0075d3";
 
@@ -3406,8 +3410,8 @@ int32_t mpe_hal_dump_table_hashidx_entry(void *phtable,uint32_t hashidx,uint32_t
 				seq_printf(seq,"MPE FW TABLE [IPV4]\n");
 				seq_printf(seq,"key :srcip		= %s\n",inet_ntoa(((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.srcip));
 				seq_printf(seq,"key :dstip		= %s\n",inet_ntoa(((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.dstip));
-				seq_printf(seq,"key :dstport		= %d\n",((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.dstport);
 				seq_printf(seq,"key :srcport		= %d\n",((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.srcport);
+				seq_printf(seq,"key :dstport		= %d\n",((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.dstport);
 
 				if (((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.extn == 0x80) {
 					seq_printf(seq,"key :extn		= %d GRE[TCP]\n",((struct fw_compare_hash_auto_ipv4 *)(phtable + (current_ptr * size)))->key.extn);
@@ -3554,8 +3558,8 @@ int32_t mpe_hal_dump_table_hashidx_entry(void *phtable,uint32_t hashidx,uint32_t
 				ip6key.dstip[2] = ((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.dstip[1];
 				ip6key.dstip[3] = ((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.dstip[0];
 				seq_printf(seq,"key :dst_ip	=%s \n",inet_ntop6((char *)&ip6key.dstip,str,INET6_ADDRSTRLEN));
-				seq_printf(seq,"key :dstport	= %d\n",((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.dstport);
 				seq_printf(seq,"key :srcport	= %d \n",((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.srcport);
+				seq_printf(seq,"key :dstport	= %d\n",((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.dstport);
 				if (((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.extn == 0x81) {
 					seq_printf(seq,"key :extn	= %d GRE[UDP]\n",((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.extn);
 				} else if (((struct fw_compare_hash_auto_ipv6 *)(phtable + (current_ptr * size)))->key.extn == 0x80) {
@@ -3755,7 +3759,7 @@ int32_t mpe_hal_dump_ipv6_cmp_table_entry( struct seq_file *seq )
 			seq_printf(seq,"DstIp: %pI6\n",tmpip6);
 			seq_printf(seq,"SrcPort: %d\n",(pIp6CmpTbl + (i ))->key.srcport);
 			seq_printf(seq,"DstPort: %d\n",(pIp6CmpTbl + (i ))->key.dstport);
-			seq_printf(seq,"DstPort: %d\n",(pIp6CmpTbl + (i ))->key.extn);
+			seq_printf(seq,"Extn: %d\n",(pIp6CmpTbl + (i ))->key.extn);
 			seq_printf(seq,"====================\n");
 		}
 	}
@@ -5990,6 +5994,7 @@ static int32_t mpe_hal_deregister_caps(void)
 #if IS_ENABLED(CONFIG_INTEL_IPQOS_MPE_DS_ACCEL)
         ppa_drv_deregister_cap(MPE_DS_QOS,MPE_HAL);
 #endif
+	ppa_drv_deregister_cap(TUNNEL_MAP_E, MPE_HAL);
 
 	return PPA_SUCCESS;
 }
@@ -6028,6 +6033,8 @@ static struct platform_driver mpe_xrx500_driver = {
 
 static int32_t hal_init(void) 
 {
+	int32_t ret;
+
 	platform_driver_register(&mpe_xrx500_driver);
 	/*dbg("MPE HAL FW State : %d\n",g_HAL_State);*/
 
@@ -6042,17 +6049,20 @@ LOAD_FW:
 #ifndef NO_FW_HDR
 	if(mpe_hal_read_fw_hdr() == PPA_FAILURE) {
 		dbg("File not found.\n");
-		return PPA_FAILURE;
+		ret = PPA_FAILURE;
+		goto CLEANUP;
 	}
 #endif
 	if(mpe_hal_load_fw( MPE_FILE_PATH) == PPA_FAILURE) {
 		dbg("Insufficient memory for MPE FW.\n");
-		return PPA_FAILURE;
+		ret = PPA_FAILURE;
+		goto CLEANUP;
 	}
 ALLOCATE_FW_DATA:
 	if(mpe_hal_allocate_fw_table() == PPA_FAILURE) {
 		dbg("Insufficient memory for MPE FW tables allocation\n");
-		return PPA_FAILURE;
+		ret = PPA_FAILURE;
+		goto CLEANUP;
 	}
 RUN_FW:
 #ifndef NO_FW_HDR
@@ -6063,12 +6073,17 @@ RUN_FW:
 #endif
 	{
 		dbg("Cannot run MPE FW.\n");
-		return PPA_FAILURE;
+		ret = PPA_FAILURE;
+		goto CLEANUP;
 	}		
 	mpe_hal_feature_start_fn = NULL;
 	mpe_register_hal();
 	return 0;
 
+CLEANUP:
+	platform_driver_unregister(&mpe_xrx500_driver);
+
+	return ret;
 }
 
 int32_t mpe_hal_fw_load(void)

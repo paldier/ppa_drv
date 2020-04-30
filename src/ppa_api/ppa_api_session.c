@@ -693,7 +693,7 @@ int32_t ppa_update_session_extra(PPA_SESSION_EXTRA *p_extra, struct uc_session_n
 		if (p_extra->out_vlan_insert) {
 			p_item->flags |= SESSION_VALID_OUT_VLAN_INS;
 			p_item->pkt.out_vlan_tag = p_extra->out_vlan_tag;
-			} else {
+		} else {
 			p_item->flags &= ~SESSION_VALID_OUT_VLAN_INS;
 			p_item->pkt.out_vlan_tag = 0;
 		}
@@ -997,6 +997,24 @@ int32_t ppa_update_session(PPA_BUF *ppa_buf, struct uc_session_node *p_item, uin
 			goto __UPDATE_FAIL;
 		}
 		/*printk(KERN_INFO"%s %d update_session success\n", __FUNCTION__, __LINE__);*/
+	}
+	/* Skip the learning for mape mesh mode,
+			mape session is marked as mesh mode if fmr is set
+			and IPv4 prefix matches with session dest ip in US or session src ip in DS */
+	if (ppa_is_MapESession(p_item)) {
+		if (ppa_is_LanSession(p_item)) {
+			if (ppa_is_mape_mesh_session(p_item->pkt.dst_ip.ip, p_item->tx_if) == true) {
+				p_item->flags |= SESSION_NOT_ACCELABLE;
+				ret = PPA_FAILURE;
+				goto __UPDATE_FAIL;
+			}
+		} else {
+			if (ppa_is_mape_mesh_session(p_item->pkt.src_ip.ip, p_item->rx_if) == true) {
+				p_item->flags |= SESSION_NOT_ACCELABLE;
+				ret = PPA_FAILURE;
+				goto __UPDATE_FAIL;
+			}
+		}
 	}
 	/*dump_list_item(p_item, "after ppa_update_session");*/
 
@@ -1607,8 +1625,7 @@ int32_t ppa_update_session_info(PPA_BUF *ppa_buf, struct uc_session_node *p_item
 	if (p_item->flags & SESSION_LAN_ENTRY  && (p_item->flags & SESSION_TUNNEL_6RD)) {
 		if (!rx_local && p_item->tx_if)
 			p_item->pkt.sixrd_daddr = ppa_get_6rdtunel_dst_ip(ppa_buf,p_item->tx_if);
-		}
-
+	}
 
 	/**  get new dest MAC address for ETH, EoA*/
   	CLR_DBG_FLAG(p_item, SESSION_DBG_GET_DST_MAC_FAIL);
@@ -2439,14 +2456,13 @@ void ppa_check_hit_stat_clear_mib(int32_t flag)
 					p_item->last_hit_time = ppa_get_time_in_sec();
 #if IS_ENABLED(CONFIG_SOC_GRX500)
 					tmp = route.bytes;
-
-					if ((p_item->acc_bytes + route.bytes) > (uint64_t)WRAPROUND_64BITS) {
+					if (route.bytes > ((uint64_t)WRAPROUND_64BITS - p_item->acc_bytes)) {
 						err(" p_item->acc_bytes %llu wrapping around \n", p_item->acc_bytes);
 						p_item->acc_bytes = route.bytes;
 					} else {
 						p_item->last_bytes = p_item->acc_bytes;
 						p_item->acc_bytes += route.bytes;
-					}	
+					}
 #else
 					p_item->last_bytes = p_item->acc_bytes;
 					p_item->acc_bytes = route.bytes;	
@@ -2583,15 +2599,14 @@ void ppa_check_hit_stat_clear_mib(int32_t flag)
 				if (mc.f_hit) {
 					p_mc_item->last_hit_time = ppa_get_time_in_sec();
 					tmp = mc.bytes; 
-					if ((p_mc_item->acc_bytes + mc.bytes) >
-							(uint64_t)WRAPROUND_64BITS) {
-						err(" p_mc_item->acc_bytes  %llu wrapping around \n", 
+					if (mc.bytes > ((uint64_t)WRAPROUND_64BITS - p_mc_item->acc_bytes)) {
+						err(" p_mc_item->acc_bytes  %llu wrapping around \n",
 							p_mc_item->acc_bytes);
 						p_mc_item->acc_bytes = mc.bytes;
 					} else {
 						p_mc_item->last_bytes = p_mc_item->acc_bytes;
 						p_mc_item->acc_bytes += mc.bytes;
-					}   
+					}
 #if defined(PPA_IF_MIB) && PPA_IF_MIB
 					if (p_mc_item->grp.src_netif)
 						update_netif_hw_mib(ppa_get_netif_name
@@ -2902,7 +2917,7 @@ static INLINE void ppa_remove_mc_groups_on_netif (PPA_IFNAME *ifname)
 					break;
 				}
 			}
-			if (i >= p_mc_item->grp.num_ifs)
+			if (i >= PPA_MAX_MC_IFS_NUM)
 				continue;
 			if (p_mc_item->grp.num_ifs == 0)
 				ppa_remove_mc_group(p_mc_item);
@@ -3058,7 +3073,7 @@ static void print_flags(uint32_t flags)
 	int i;
 	flag = 0;
 
-	for (bit = 1, i = 0; bit; bit <<= 1, i++)
+	for (bit = 1, i = 0; i < ARRAY_SIZE(str_flag); bit <<= 1, i++)
 		if ((flags & bit)) {
 			if (flag++)
 				printk(KERN_INFO  "| ");
@@ -3807,7 +3822,7 @@ int32_t ppa_update_mc_group_extra(PPA_SESSION_EXTRA *p_extra,
 	}
 
 	if ((flags & PPA_F_SESSION_VLAN)) {
-			if (p_extra->vlan_insert) {
+		if (p_extra->vlan_insert) {
 			p_item->flags |= SESSION_VALID_VLAN_INS;
 			p_item->grp.new_vci = ((uint32_t)p_extra->vlan_prio << 13)
 				| ((uint32_t)p_extra->vlan_cfi << 12) | p_extra->vlan_id;
@@ -3820,19 +3835,19 @@ int32_t ppa_update_mc_group_extra(PPA_SESSION_EXTRA *p_extra,
 			p_item->flags |= SESSION_VALID_VLAN_RM;
 		else
 			p_item->flags &= ~SESSION_VALID_VLAN_RM;
-		}
+	}
 
 	if ((flags & PPA_F_SESSION_OUT_VLAN)) {
 		if (p_extra->out_vlan_insert) {
  			p_item->flags |= SESSION_VALID_OUT_VLAN_INS;
 			p_item->grp.out_vlan_tag = p_extra->out_vlan_tag;
-			} else {
-					p_item->flags &= ~SESSION_VALID_OUT_VLAN_INS;
-					p_item->grp.out_vlan_tag = 0;
-			}
+		} else {
+			p_item->flags &= ~SESSION_VALID_OUT_VLAN_INS;
+			p_item->grp.out_vlan_tag = 0;
+		}
 
 		if (p_extra->out_vlan_remove)
-					p_item->flags |= SESSION_VALID_OUT_VLAN_RM;
+			p_item->flags |= SESSION_VALID_OUT_VLAN_RM;
 		else
 			p_item->flags &= ~SESSION_VALID_OUT_VLAN_RM;
 	}
@@ -4312,10 +4327,9 @@ int32_t ppa_mc_entry_rtp_set(PPA_MC_GROUP *ppa_mc_entry)
 int32_t ppa_hw_set_mc_rtp(struct mc_session_node *p_item)
 {
 	PPA_MC_INFO mc={0};
-	mc.p_entry = p_item->mc_entry;
-	ppa_hsel_set_wan_mc_rtp(&mc, p_item->caps_list[0].hal_id);
 
-	return PPA_SUCCESS;
+	mc.p_entry = p_item->mc_entry;
+	return ppa_hsel_set_wan_mc_rtp(&mc, p_item->caps_list[0].hal_id);
 }
 
 int32_t ppa_hw_get_mc_rtp_sampling_cnt(struct mc_session_node *p_item)
@@ -4626,7 +4640,7 @@ int32_t ppa_bridging_hw_add_mac(struct br_mac_node *p_item)
 		br_mac.static_entry = SESSION_STATIC; 
 	}
 	br_mac.fid = p_item->fid;
-	br_mac.sub_ifid = 	p_item->sub_ifid;
+	br_mac.sub_ifid = p_item->sub_ifid;
 #endif
 	if (ppa_drv_add_bridging_entry(&br_mac, 0) == PPA_SUCCESS) {
 		p_item->bridging_entry = br_mac.p_entry;
@@ -5322,6 +5336,7 @@ __ADD_SESSION_DONE:
 					p_item->src_ifid = rx_ifinfo->phys_port;
 				}
 #endif /*defined(CONFIG_SOC_GRX500) && CONFIG_SOC_GRX500*/
+
 				/*Get the nat information */
 				ppa_memset(&p_item->pkt.natip, 0, sizeof(p_item->pkt.natip));
 				p_item->pkt.nat_port= 0;

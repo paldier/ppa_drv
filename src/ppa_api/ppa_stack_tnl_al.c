@@ -86,32 +86,21 @@ int32_t ppa_get_mac_from_neigh(uint8_t* mac,struct neighbour *neigh,struct dst_e
 {
 	int32_t ret=PPA_ENOTAVAIL;
 	struct hh_cache *hh;
+	unsigned int seq;
 
 	ppa_neigh_hh_init(neigh);
 	ppa_neigh_update_hhs(neigh);
 	hh = &neigh->hh;
 
-	if( !hh ) {
-
-		if ( neigh && !is_zero_mac(neigh->ha)) {
-			memcpy(mac, (uint8_t *)neigh->ha, ETH_ALEN);
+	do {
+		seq = read_seqbegin(&hh->hh_lock);
+		if ( hh->hh_len == ETH_HLEN ) {
+			memcpy(mac, (uint8_t *)hh->hh_data + HH_DATA_ALIGN(hh->hh_len) - hh->hh_len,
+					ETH_ALEN);
 			ret = PPA_SUCCESS;
-		}
-	} else {
-
-		unsigned int seq;
-		do {
-
-			seq = read_seqbegin(&hh->hh_lock);
-			if ( hh->hh_len == ETH_HLEN ) {
-				memcpy(mac,
-						(uint8_t *)hh->hh_data + HH_DATA_ALIGN(hh->hh_len) - hh->hh_len,
-						ETH_ALEN);
-				ret = PPA_SUCCESS;
-			} else
-				ret = PPA_ENOTAVAIL;
-		} while ( read_seqretry(&hh->hh_lock, seq) );
-	}
+		} else
+			ret = PPA_ENOTAVAIL;
+	} while ( read_seqretry(&hh->hh_lock, seq) );
 
 	return ret;
 }
@@ -303,7 +292,6 @@ int ppa_get_ipv4_tnl_iph(struct iphdr* iph,
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
-	static
 int ppa_get_ipv6_tnl_iph(struct ipv6hdr* ip6h,
 		struct net_device *dev,
 		uint16_t dataLen)
@@ -322,6 +310,29 @@ int ppa_get_ipv6_tnl_iph(struct ipv6hdr* ip6h,
 
 	return PPA_SUCCESS;
 }
+
+EXPORT_SYMBOL(ppa_get_ipv6_tnl_iph);
+bool ppa_is_mape_mesh_session(uint32_t dest_ip,
+		struct net_device *dev)
+{
+	struct ip6_tnl *t;
+	struct __ip6_tnl_fmr *fmr;
+
+	t = netdev_priv(dev);
+
+	for (fmr = t->parms.fmrs; fmr; fmr = fmr->next) {
+		unsigned mshift = 32 - fmr->ip4_prefix_len;
+		if (ntohl(fmr->ip4_prefix.s_addr) >> mshift == dest_ip >> mshift)
+			break;
+	}
+
+	if (fmr)
+		return true;
+
+	return false;
+}
+
+EXPORT_SYMBOL(ppa_is_mape_mesh_session);
 #endif
 
 #if IS_ENABLED(CONFIG_PPPOE)
@@ -870,10 +881,6 @@ int ppa_get_6rd_dmac(struct net_device *dev, struct sk_buff *skb, uint8_t *mac,
 	else
 		dst = &rt->dst;
 
-	if (!dst) {
-		ip_rt_put(rt);
-		return -1;
-	}
 	neigh = dst_neigh_lookup_skb(dst, skb);
 	if (neigh == NULL) {
 		ip_rt_put(rt);
@@ -1198,7 +1205,7 @@ int ppa_get_ip4ip6_dmac(struct net_device *dev, struct sk_buff *skb,
 
 	neigh = dst_neigh_lookup(dst, &(t->parms.raddr));
 	if (neigh == NULL)
-		return -1;
+		goto MAC_ERROR;
 
 	if (dst->dev->header_ops->cache == NULL) {
 		ppa_neigh_hh_init(neigh);
@@ -1222,8 +1229,8 @@ int ppa_get_ip4ip6_dmac(struct net_device *dev, struct sk_buff *skb,
 		do {
 			seq = read_seqbegin(&hh->hh_lock);
 			if (hh->hh_len != ETH_HLEN) {
-				goto MAC_ERROR;
 				neigh_release(neigh);
+				goto MAC_ERROR;
 			} else {
 				memcpy(mac, (uint8_t *)hh->hh_data + HH_DATA_ALIGN(hh->hh_len) - hh->hh_len, ETH_ALEN);
 			}
@@ -1310,11 +1317,7 @@ void ppa_neigh_hh_init(struct neighbour *n)
 	struct hh_cache	*hh = &n->hh;
 
 	write_lock_bh(&n->lock);
-	if(hh == NULL)
-	{
-		write_unlock_bh(&n->lock);
-		return;
-	}
+
 	/* Only one thread can come in here and initialize the
 	 * hh_cache entry.
 	 */

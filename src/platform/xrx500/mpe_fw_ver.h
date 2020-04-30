@@ -31,8 +31,8 @@ and approved by Intel in writing.
 
 #define VER_MAJ             1
 #define VER_MID             1
-#define VER_MIN             1
-#define VER_TAG             3
+#define VER_MIN             4
+#define VER_TAG             0 
 #define VER_DESC            "Silver"
 #define FW_COMPATIBLE_ID    18
 

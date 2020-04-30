@@ -13,3 +13,4 @@ obj-m	+= ltq_mpe_hal_drv.o
 ltq_mpe_hal_drv-objs	+= ltq_mpe_hal_proc.o ltq_mpe_tmpl_buf.o ltq_mpe_hal.o
 endif
 obj-$(CONFIG_LTQ_PPA_ETH_BOND)  += ltq_eth_bond_dp.o
+obj-$(CONFIG_PHY_ERR_CTR) += phy_err_counter.o

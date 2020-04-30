@@ -47,6 +47,7 @@
 #include "ltq_mpe_api.h"
 #include "../../ppa_api/ppa_api_netif.h"
 #include "../../ppa_api/ppa_api_session.h"
+#include <net/ppa/ppa_stack_al.h>
 
 #define UDP_HDR_LEN		8
 #define IPV4_HDR_LEN		20	/*assuming no option fields are present*/
@@ -159,6 +160,7 @@ static void print_action_info(struct session_action* s_act, uint8_t ipV4)
 #define IsValidVlanIns(flags)		( (flags) & SESSION_VALID_VLAN_INS )
 #define IsValidVlanRm(flags)		( (flags) & SESSION_VALID_VLAN_RM )
 #define IsValidOutVlanIns(flags)	( (flags) & SESSION_VALID_OUT_VLAN_INS)
+#define IsValidOutVlanRm(flags)		( (flags) & SESSION_VALID_OUT_VLAN_RM)
 #define IsIpv6Session(flags)		( (flags) & SESSION_IS_IPV6)
 #define IsTunneledSession(flags)	( (flags) & (SESSION_TUNNEL_DSLITE | \
 						SESSION_TUNNEL_6RD | \
@@ -332,8 +334,6 @@ static uint16_t ppa_out_header_len( struct uc_session_node *p_item, uint32_t *de
 				temp_netif = p_item->tx_if;
 			}
 			if(ppa_tmpl_get_underlying_vlan_interface_if_eogre(temp_netif, &base_netif, &is_eogre) == PPA_SUCCESS) {
-				if (base_netif != NULL) 
-					printk("<%s:%d> Get GRE Header length for %s!!!\n", __func__, __LINE__, base_netif->name);
 				ppa_get_gre_hdrlen(base_netif, &hdrlen);
 			}
 			headerlength += hdrlen;
@@ -358,8 +358,6 @@ static uint16_t ppa_out_header_len( struct uc_session_node *p_item, uint32_t *de
 				temp_netif = p_item->rx_if;
 			}
 			if(ppa_tmpl_get_underlying_vlan_interface_if_eogre(temp_netif, &base_netif, &is_eogre) == PPA_SUCCESS) {
-				if (base_netif != NULL) 
-					printk("<%s:%d> Get GRE Header length for %s!!!\n", __func__, __LINE__, base_netif->name);
 				ppa_get_gre_hdrlen(base_netif, &hdrlen);
 			}
 			*delta -= hdrlen;
@@ -376,6 +374,8 @@ static uint16_t ppa_out_header_len( struct uc_session_node *p_item, uint32_t *de
 	if( IsValidVlanRm(p_item->flags) ) {
 		*delta += -VLAN_HLEN;
 	}
+	if (IsValidOutVlanRm(p_item->flags))
+		*delta -= VLAN_HLEN;
 	if( IsPppoeSession(p_item->flags) ) {
 		if( is_lan ) {
 			headerlength += PPPOE_HLEN;
@@ -440,6 +440,73 @@ static uint32_t ppa_form_6rd_tunnel(struct uc_session_node *p_item, uint8_t* hdr
 
 	ppa_memcpy(hdr, &iph, sizeof(struct iphdr));
 	return (sizeof(struct iphdr));
+}
+
+void ppa_update_grehdr_inherited(void *s_pkt, PPA_NETIF *gre_netif,
+		bool isIPv4Gre, void *grehdr, struct session_action *pSwaHdr)
+{
+	struct iphdr *iph;
+	struct ipv6hdr *ip6h;
+	struct ip6_tnl *t;
+	uint8_t dsfield_outer = 0;
+	bool is_recal_csum = false;
+
+	/* IPv4 fields to be inherited from inner IP header */
+	if (isIPv4Gre) {
+		iph = (struct iphdr *)grehdr;
+
+		/* ToS (DSCP+ECN) inheritence */
+		if ((iph->tos & 0x1) &&
+		    ((pSwaHdr->outer_dscp_mode == 1) || (pSwaHdr->outer_dscp_mode == 0))) {
+
+			/* (DSCP+ECN) to be inherited by MPE fw */
+			pSwaHdr->outer_dscp_mode = 1;
+			iph->tos &= ~0x1;
+			is_recal_csum = true;
+		} else {
+
+			/* Only ECN is inherited here, no DSCP inheritence */
+			if (pSwaHdr->outer_dscp_mode == 1)
+				pSwaHdr->outer_dscp_mode = 0;
+
+			iph->tos &= ~0x1;
+			iph->tos = INET_ECN_encapsulate(0, ppa_get_pkt_ip_tos(s_pkt));
+			is_recal_csum = true;
+		}
+
+		/* TTL is inherited here, when not configured explicitly */
+		if (iph->ttl == 0) {
+			iph->ttl = ppa_get_pkt_ip_ttl(s_pkt);
+			is_recal_csum = true;
+		}
+
+		/* Re-calculate IPv4 header checksum */
+		if (is_recal_csum) {
+			iph->check = 0;
+			iph->check = ppa_ip_fast_csum((unsigned char *)iph, iph->ihl);
+		}
+	} else {
+		ip6h = (struct ipv6hdr *)grehdr;
+		t =  netdev_priv(gre_netif);
+		dsfield_outer = 0;
+
+		/* ToS (DSCP+ECN) inheritence */
+		if ((t->parms.flags & IP6_TNL_F_USE_ORIG_TCLASS) &&
+		    (pSwaHdr->outer_dscp_mode == 0)) {
+
+			/* (DSCP+ECN) to be inherited by MPE fw */
+			pSwaHdr->outer_dscp_mode = 1;
+		} else if (!((t->parms.flags & IP6_TNL_F_USE_ORIG_TCLASS) &&
+			     (pSwaHdr->outer_dscp_mode == 1))) {
+
+			/* Only ECN is inherited here, no DSCP inheritence */
+			if (pSwaHdr->outer_dscp_mode == 1)
+				pSwaHdr->outer_dscp_mode = 0;
+
+			dsfield_outer |= INET_ECN_encapsulate(0, ppa_get_pkt_ip_tos(s_pkt));
+			ipv6_change_dsfield(ip6h, 0, dsfield_outer);
+		}
+	}
 }
 
 static uint32_t ppa_form_ipsec_tunnel_hdr(void *s_pkt, uint8_t* hdr, unsigned isIPv6)
@@ -571,26 +638,18 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 		if ( ppa_is_EgressGreSession(p_item) ) {
 			if ( IsBridgedSession(p_item->flag2) ) {
 				swaHdr.tunnel_type = TUNL_EOGRE;
-
-				/* Bridged: EoGRE->EoGRE session full processing */
-				if ( ppa_is_IngressGreSession(p_item) ) {
-					mtu += 1;
-				}
 			} else {
 				/* RoutedWAN->EoGRE session full processing */
 				if ( !IsLanSession(p_item->flags) ) {
 					if ( Is6rdSession(p_item->flags) ) {
 						swaHdr.tunnel_type = TUNL_6RD;
-						mtu += 1;
 					} else if ( IsDsliteSession(p_item->flags) ) {
 						swaHdr.tunnel_type = TUNL_DSLITE;
-						mtu += 1;
 					} else if ( IsL2TPSession(p_item->flags) && !IsIpsecTransSession(p_item->flag2) ) {
 						swaHdr.tunnel_type = TUNL_L2TP;
 						swaHdr.tunnel_rm_en = 1;
 					} else if ( ppa_is_IngressGreSession(p_item) ) {
 						swaHdr.tunnel_type = TUNL_IPOGRE;
-						mtu += 1;
 					} else if ( IsIpsecTransSession(p_item->flag2) ) {
 						swaHdr.tunnel_type = TRAN_ESP;
 					} else if ( IsIpsecSession(p_item->flag2) ) {
@@ -614,9 +673,7 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 			swaHdr.tunnel_ip_offset = tlen - hdrlen;
 
 			temp_netif = tx_netif;
-			printk("GRE SESSION for %s!!!\n", temp_netif->name);
 			if(ppa_if_is_vlan_if(temp_netif, temp_netif->name)) {
-				printk("GRE SESSION!!!\n");
 				tlen += VLAN_HLEN;
 			}
 			//delta = tlen; /* Needs ETH header for EoGRE */
@@ -637,7 +694,16 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 	} else if( IsTunneledSession(p_item->flags) | IsGreSession(p_item->flag2) | IsIpsecSession(p_item->flag2)) {
 		/* All tunnel US encapsulation complementary processing except EoGre */
 		if( IsLanSession(p_item->flags) ) {
-			if ( IsDsliteSession(p_item->flags) ) {
+			if( ppa_is_MapESession(p_item)) {
+				swaHdr.tunnel_type = TUNL_DSLITE;
+				swaHdr.tunnel_ip_offset_en = 1;
+				swaHdr.tunnel_ip_offset = tlen - IPV6_HDR_LEN;
+				swaHdr.new_src_ip_en = 1;
+				swaHdr.new_src_ip.ip4.ip = p_item->pkt.nat_ip.ip;
+				if (IsValidNatPort(p_item->flags))
+					swaHdr.new_src_port = p_item->pkt.nat_port;
+				proto_type = ETH_P_IPV6;
+			} else if ( IsDsliteSession(p_item->flags) ) {
 
 				swaHdr.tunnel_type = TUNL_DSLITE;
 				swaHdr.tunnel_ip_offset_en = 1;
@@ -745,6 +811,12 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 			swaHdr.tunnel_rm_en = 1;
 			if ( Is6rdSession(p_item->flags) ) {
 				swaHdr.tunnel_type = TUNL_6RD;
+			} else if( ppa_is_MapESession(p_item)) {
+				swaHdr.tunnel_type = TUNL_DSLITE;
+				swaHdr.new_dst_ip_en = 1;
+				swaHdr.new_dst_ip.ip4.ip = p_item->pkt.nat_dst_ip.ip;
+				if (IsValidNatPort(p_item->flags))
+					swaHdr.new_dst_port = p_item->pkt.nat_port;
 			} else if ( IsDsliteSession(p_item->flags) ) {
 				swaHdr.tunnel_type = TUNL_DSLITE;
 			} else if( IsL2TPSession(p_item->flags)) {
@@ -762,7 +834,6 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 		swaHdr.new_dst_ip_en = 1;
 		swaHdr.new_src_ip_en = 1;
 
-		mtu += 1;
 		if( IsLanSession(p_item->flags) ) {
 			if( IsPppoeSession(p_item->flags) ) {
 				swaHdr.pppoe_offset_en = 1;
@@ -1027,25 +1098,8 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 					ppa_form_gre_hdr(base_netif, isIPv6, ETH_HLEN+4, hdr, &tlen);
 				else
 					ppa_form_gre_hdr(base_netif, isIPv6, ETH_HLEN, hdr, &tlen);
-				/*printk("<%s> Get GRE Header length for %s --> %d!!!\n",__func__,base_netif->name,tlen); */
 
-				/* IPv4 fields to be inherited from inner IP header */
-				if (isIPv4Gre) {
-					struct iphdr *iph = (struct iphdr *)hdr;
-					bool is_recal_csum = false;
-
-					/* TTL to be inherited, when not configured explicitly */
-					if (iph->ttl == 0) {
-						iph->ttl = ppa_get_pkt_ip_ttl(metainfo->skb);
-						is_recal_csum = true;
-					}
-
-					/* Re-calculate IPv4 header checksum */
-					if (is_recal_csum) {
-						iph->check = 0;
-						iph->check = ppa_ip_fast_csum((unsigned char *)iph, iph->ihl);
-					}
-				}
+				ppa_update_grehdr_inherited(metainfo->skb, base_netif, isIPv4Gre, hdr, &swaHdr);
 			}
 
 			hdr += tlen;
@@ -1075,7 +1129,9 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 
 	if( IsLanSession(p_item->flags) ) {
 		/* Add Tunnel header here */
-		if ( IsDsliteSession(p_item->flags) ) {
+		if( ppa_is_MapESession(p_item)) {
+			ppa_get_ipv6_tnl_iph((struct ipv6hdr*)hdr, metainfo->skb->dev, 0);
+		} else if ( IsDsliteSession(p_item->flags) ) {
 			ppa_form_dslite_tunnel(p_item->tx_if, hdr);
 		} else if ( Is6rdSession(p_item->flags) ) {
 			ppa_form_6rd_tunnel(p_item, hdr);
@@ -1088,30 +1144,12 @@ int32_t ppa_form_session_tmpl(PPA_SESSMETA_INFO *metainfo)
 			temp_netif = p_item->tx_if;
 			if(ppa_tmpl_get_underlying_vlan_interface_if_eogre(temp_netif, &base_netif, &is_eogre) == PPA_SUCCESS)
 			{
-				printk("<%s:%d> --> Get GRE Header length for %s!!!\n", __func__, __LINE__, base_netif->name);
-
 				if(ppa_if_is_vlan_if(temp_netif, NULL))
 					ppa_form_gre_hdr(base_netif, isIPv6, 4, hdr, &tlen);
 				else
 					ppa_form_gre_hdr(base_netif, isIPv6, 0, hdr, &tlen);
 
-				/* IPv4 fields to be inherited from inner IP header */
-				if (isIPv4Gre) {
-					struct iphdr *iph = (struct iphdr *)hdr;
-					bool is_recal_csum = false;
-
-					/* TTL to be inherited, when not configured explicitly */
-					if (iph->ttl == 0) {
-						iph->ttl = ppa_get_pkt_ip_ttl(metainfo->skb);
-						is_recal_csum = true;
-					}
-
-					/* Re-calculate IPv4 header checksum */
-					if (is_recal_csum) {
-						iph->check = 0;
-						iph->check = ppa_ip_fast_csum((unsigned char *)iph, iph->ihl);
-					}
-				}
+				ppa_update_grehdr_inherited(metainfo->skb, base_netif, isIPv4Gre, hdr, &swaHdr);
 			}
 
 		} else if(IsIpsecSession(p_item->flag2)) {

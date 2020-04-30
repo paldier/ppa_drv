@@ -46,14 +46,12 @@
 #if IS_ENABLED(CONFIG_PPA_QOS)
 
 #if IS_ENABLED(WMM_QOS_CONFIG)
-
-int g_eth_class_prio_map[4][16] = {
-	{0,1,2,3,4,5,6,7,7,7,7,7,7,7,7,7},
-	{0,1,2,3,4,5,6,7,7,7,7,7,7,7,7,7},
-	{0,1,2,3,4,5,6,7,7,7,7,7,7,7,7,7},
-	{0,1,2,3,4,5,6,7,7,7,7,7,7,7,7,7}
+int g_eth_class_prio_map[MAX_WLAN_DEV][MAX_TC_NUM] = {
+	{0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7},
+	{0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7},
+	{0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7},
+	{0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7}
 };
-
 #endif /*WMM_QOS_CONFIG*/
 
 #define PPA_MAX_Q 40
@@ -87,17 +85,6 @@ PPA_LOCK g_qos_queue_lock;
 /*
 #############STRUCTURE DEFINITIONS : START################
 */
-
-#if IS_ENABLED(WMM_QOS_CONFIG)
-typedef struct ppa_qos_wlan_wmm_callback_t{
-	int32_t port_id;/* PortId corresponding to Wlan interface*/
-	struct net_device *netDev; /* Member NetDevice */
-	PPA_QOS_CLASS2PRIO_CB callbackfun; /* class2prio map callback function*/
-	struct list_head list;	/*	 */
-} PPA_QOS_WLAN_WMM_CB_t;
-
-LIST_HEAD(ppa_qos_wlan_wmm_list_g);
-#endif /*WMM_QOS_CONFIG*/
 
 /*
 ############# STRUCTURE DEFINITIONS : END################
@@ -237,8 +224,8 @@ int32_t qosal_add_shaper(PPA_CMD_RATE_INFO *rate_info, QOS_SHAPER_LIST_ITEM **pp
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"alloc shaper list item failed \n" ); 
 		return PPA_ENOMEM;
 	}
-	strcpy(p_item->ifname,rate_info->ifname);
-	strcpy(p_item->dev_name,rate_info->ifname);
+	ppa_strncpy(p_item->ifname, rate_info->ifname, PPA_IF_NAME_SIZE);
+	ppa_strncpy(p_item->dev_name, rate_info->ifname, PPA_IF_NAME_SIZE);
 	p_item->portid = rate_info->portid;
 	p_item->shaperid = rate_info->shaperid;
 	p_item->shaper.enable = rate_info->shaper.enable;
@@ -298,7 +285,7 @@ int32_t qosal_add_shaper(PPA_CMD_RATE_INFO *rate_info, QOS_SHAPER_LIST_ITEM **pp
 					shaper_cfg.cbs = rate_info->shaper.cbs;
 					shaper_cfg.flags = rate_info->shaper.flags;
 #if IS_ENABLED(CONFIG_PPA_PUMA7)
-					strcpy(shaper_cfg.ifname,rate_info->ifname);
+					ppa_strncpy(shaper_cfg.ifname, rate_info->ifname, PPA_IF_NAME_SIZE);
 #endif 
 					ret = ppa_set_qos_shaper(rate_info->shaperid,rate_info->rate,
 							rate_info->burst,&shaper_cfg,rate_info->shaper.flags,caps_list[i].hal_id);
@@ -551,7 +538,7 @@ int32_t qosal_set_qos_inggrp(PPA_CMD_QOS_INGGRP_INFO *inggrp_info, QOS_INGGRP_LI
 
 	memset(&hcfg, 0, sizeof(hcfg));
 	hcfg.ingress_group = inggrp_info->ingress_group;
-	strcpy(hcfg.ifname, inggrp_info->ifname);
+	ppa_strncpy(hcfg.ifname, inggrp_info->ifname, PPA_IF_NAME_SIZE);
 	if (ppa_set_qos_inggrp(&hcfg, hsel.hal_id) != PPA_SUCCESS) {
 		ppa_debug(DBG_ENABLE_MASK_ERR, "%s:%d: failed to set Ingress Grouping for HAL id %d\n", __func__, __LINE__, hsel.hal_id);
 		return PPA_FAILURE;
@@ -565,7 +552,7 @@ int32_t qosal_set_qos_inggrp(PPA_CMD_QOS_INGGRP_INFO *inggrp_info, QOS_INGGRP_LI
 			return PPA_ENOMEM;
 		}
 
-		strcpy(p_item->ifname, inggrp_info->ifname);
+		ppa_strncpy(p_item->ifname, inggrp_info->ifname, PPA_IF_NAME_SIZE);
 		p_item->ingress_group = inggrp_info->ingress_group;
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s:%d: Add item %p ifname=%s, inggrp=%d\n", __func__, __LINE__,
 					p_item, p_item->ifname, p_item->ingress_group);
@@ -722,19 +709,19 @@ EXPORT_SYMBOL(ppa_qos_create_c2p_map_for_wmm);
 
 static int32_t ppa_set_wlan_wmm_prio(PPA_IFNAME *ifname,int32_t port_id,int8_t caller_flag)
 {
-	struct netif_info *ifinfo;
-	struct list_head *now_head = NULL;
+	PPA_NETIF *netif = NULL;
+	dp_subif_t dp_subif = {0};
 	uint8_t *class2prio;
 	uint8_t c2p[16],cl2p[16] = {0};
 	int32_t i;
 	int8_t port = 0;
-	PPA_QOS_WLAN_WMM_CB_t *ppa_qos_wlan_wmm_cb = NULL;
 
 	if(ifname == NULL) {
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"ifname value is NULL \n");
 		return PPA_FAILURE;
 	}
 
+	netif = ppa_get_netif(ifname);
 	ppa_memset(&c2p[0],0,16);
 	switch (caller_flag) {
 		case 1:
@@ -754,32 +741,25 @@ static int32_t ppa_set_wlan_wmm_prio(PPA_IFNAME *ifname,int32_t port_id,int8_t c
 				}
 			}
 			class2prio = &c2p[0];
-			list_for_each(now_head,&ppa_qos_wlan_wmm_list_g) {
-				ppa_qos_wlan_wmm_cb = list_entry(now_head, PPA_QOS_WLAN_WMM_CB_t,list);
-				if((ppa_qos_wlan_wmm_cb->netDev->name != NULL) && (ifname != NULL)){
-					if (!strcmp (ifname, ppa_qos_wlan_wmm_cb->netDev->name)) {
-						if(ppa_qos_wlan_wmm_cb->callbackfun != NULL) {
-							ppa_qos_wlan_wmm_cb->callbackfun(ppa_qos_wlan_wmm_cb->port_id,
-								ppa_qos_wlan_wmm_cb->netDev,class2prio);
-						}
-					}
-				}
-			}
+			ppa_call_class2prio_notifiers(PPA_CLASS2PRIO_DEFAULT,
+						      port_id, netif,
+						      class2prio);
 			break;
 		case 2:
 		case 3:
 			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d caller_case is %d!!!\n", __FILE__,
 					__FUNCTION__,__LINE__,caller_flag);
-			if ( ppa_netif_lookup(ifname, &ifinfo) != PPA_SUCCESS ) {
-				ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d netif_lookup failed!!!\n",
+
+			if (dp_get_netif_subifid(netif, NULL, NULL, NULL,
+						 &dp_subif, 0) != DP_SUCCESS) {
+				ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d dp_get_netif_subifid failed!!!\n",
 					__FILE__,__FUNCTION__,__LINE__);
 				return PPA_FAILURE;
 			}
 
-			if(!(ifinfo->flags & NETIF_DIRECTCONNECT)) {
+			if (!(dp_subif.alloc_flag & DP_F_FAST_WLAN) || (dp_subif.alloc_flag & DP_F_FAST_DSL)) {
 				ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d not a fastpath wave interface!!!\n",
 					__FILE__,__FUNCTION__,__LINE__);
-				ppa_netif_put(ifinfo);
 				return PPA_FAILURE;
 			}
 
@@ -801,21 +781,9 @@ static int32_t ppa_set_wlan_wmm_prio(PPA_IFNAME *ifname,int32_t port_id,int8_t c
 				}
 			}
 			class2prio = cl2p;
-			list_for_each(now_head,&ppa_qos_wlan_wmm_list_g) {
-				ppa_qos_wlan_wmm_cb = list_entry(now_head, PPA_QOS_WLAN_WMM_CB_t,list);
-				if((ppa_qos_wlan_wmm_cb->netDev->name != NULL) && (ifinfo->netif->name != NULL)){
-					if (!strcmp (ifinfo->netif->name, ppa_qos_wlan_wmm_cb->netDev->name)) {
-						if(ppa_qos_wlan_wmm_cb->callbackfun != NULL) {
-							ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
-								"%s %s %d Calling wmm callback fn!!!\n", __FILE__,
-								__FUNCTION__,__LINE__);
-							ppa_qos_wlan_wmm_cb->callbackfun(ppa_qos_wlan_wmm_cb->port_id,
-								ppa_qos_wlan_wmm_cb->netDev,class2prio);
-						}
-					}
-				}
-			}
-			ppa_netif_put(ifinfo);
+			ppa_call_class2prio_notifiers(PPA_CLASS2PRIO_CHANGE,
+						      dp_subif.port_id, netif,
+						      class2prio);
 			break;
 		default:
 			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"Invalid Wmm caller case \n");
@@ -1431,7 +1399,7 @@ int32_t ppa_modify_qos_subif_to_port(PPA_CMD_SUBIF_PORT_INFO *subif_port_info)
 
 	memset(&SubifPort_info, 0, sizeof(QOS_MOD_SUBIF_PORT_CFG));
 
-	strcpy(SubifPort_info.ifname, subif_port_info->ifname);
+	ppa_strncpy(SubifPort_info.ifname, subif_port_info->ifname, PPA_IF_NAME_SIZE);
 	SubifPort_info.port_id = subif_port_info->port_id;
 	SubifPort_info.priority_level = subif_port_info->priority_level;
 	SubifPort_info.weight = subif_port_info->weight;
@@ -1873,7 +1841,7 @@ int32_t qosal_modify_qos_queue(PPA_CMD_QOS_QUEUE_INFO *q_info, QOS_QUEUE_LIST_IT
 		goto UPDATE_FAILED;
 
 	/* Update all info into p_q_item */
-	strcpy(p_q_item->ifname, q_info->ifname);
+	ppa_strncpy(p_q_item->ifname, q_info->ifname, PPA_IF_NAME_SIZE);
 	p_q_item->weight = q_info->weight;
 	p_q_item->priority = q_info->priority;
 	p_q_item->qlen = q_info->qlen;
@@ -2102,76 +2070,8 @@ int32_t ppa_ioctl_delete_wmm_qos_queue(unsigned int cmd, unsigned long arg, PPA_
 
 	return ret;
 }
-static int32_t register_for_qos_class2prio(int32_t port_id, struct net_device *netif,PPA_QOS_CLASS2PRIO_CB cbfun, uint32_t flags)
-{
-	PPA_QOS_WLAN_WMM_CB_t *ppa_qos_wlan_wmm_cb = NULL;
-
-	if(netif == NULL)  {
-		/* Can netif be null and port_id have a valid value ? Need to check this.*/
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d netif is NULL!!!\n", __FILE__,__FUNCTION__,__LINE__);
-		return PPA_FAILURE;
-	}
-
-	ppa_qos_wlan_wmm_cb = (PPA_QOS_WLAN_WMM_CB_t *)ppa_malloc(sizeof(*ppa_qos_wlan_wmm_cb));
-	if(ppa_qos_wlan_wmm_cb == NULL) {
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d ppa_qos_wlan_wmm_cb malloc failed!!!\n",
-			__FILE__,__FUNCTION__,__LINE__);
-		return PPA_FAILURE;
-	}
-
-	ppa_qos_wlan_wmm_cb->netDev = netif;
-	ppa_qos_wlan_wmm_cb->port_id = port_id;
-	ppa_qos_wlan_wmm_cb->callbackfun = (void *)cbfun;
-
-	INIT_LIST_HEAD(&ppa_qos_wlan_wmm_cb->list);
-	list_add_tail(&ppa_qos_wlan_wmm_cb->list,&ppa_qos_wlan_wmm_list_g);
-
-	ppa_set_wlan_wmm_prio(netif->name,port_id,1);
-
-	return PPA_SUCCESS;
-
-}
-
-static int32_t deregister_for_qos_class2prio(int32_t port_id, struct net_device *netif,PPA_QOS_CLASS2PRIO_CB cbfun, uint32_t flags)
-{
-	struct list_head *now_head = NULL,*next_head = NULL;
-	PPA_QOS_WLAN_WMM_CB_t *ppa_qos_wlan_wmm_cb = NULL;
-
-	if(netif == NULL) {
-		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d netif is NULL!!!\n", __FILE__,__FUNCTION__,__LINE__);
-		return PPA_FAILURE;
-	}
-
-	if(now_head != NULL) {
-		list_for_each_safe(now_head,next_head,&ppa_qos_wlan_wmm_list_g) {
-			ppa_qos_wlan_wmm_cb = list_entry(now_head, PPA_QOS_WLAN_WMM_CB_t, list);
-			if(ppa_qos_wlan_wmm_cb != NULL) {
-				if(!strncmp(netif->name ,ppa_qos_wlan_wmm_cb->netDev->name,strlen(ppa_qos_wlan_wmm_cb->netDev->name))) {
-					list_del(&ppa_qos_wlan_wmm_cb->list);
-					kfree(ppa_qos_wlan_wmm_cb);
-					return PPA_SUCCESS;
-				}
-			}
-		}
-	}
-	return PPA_SUCCESS;
-}
-
-int32_t ppa_register_for_qos_class2prio(int32_t port_id, struct net_device *netif,PPA_QOS_CLASS2PRIO_CB class2prio_cbfun, uint32_t flags)
-{
-	if(netif != NULL) {
-		if(flags & WMM_QOS_DEV_F_REG) {
-			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d in WMM_QOS_DEV_F_REG !!!\n", __FILE__,__FUNCTION__,__LINE__);
-			register_for_qos_class2prio(port_id,netif,class2prio_cbfun,flags);
-		} else if((flags & WMM_QOS_DEV_F_DREG) || (class2prio_cbfun == NULL)) {
-			ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %s %d in WMM_QOS_DEV_F_DREG !!!\n", __FILE__,__FUNCTION__,__LINE__);
-			deregister_for_qos_class2prio(port_id,netif,NULL,flags);
-		}
-	}
-	return PPA_SUCCESS;
-}
-
 #endif/*WMM_QOS_CONFIG*/
+
 /*
 ############# QUEUE FUNCTION DEFINITIONS : END################
 */
@@ -3068,7 +2968,7 @@ int32_t ppa_set_qos_shaper( int32_t shaperid, uint32_t rate, uint32_t burst, PPA
 	tmu_shape_cfg.shaper.cbs = s->cbs;
 	tmu_shape_cfg.shaper.flags = s->flags;
 #if IS_ENABLED(CONFIG_PPA_PUMA7)
-	strcpy(tmu_shape_cfg.ifname,s->ifname);
+	ppa_strncpy(tmu_shape_cfg.ifname, s->ifname, PPA_IF_NAME_SIZE);
 #endif/*CONFIG_PPA_PUMA7*/
 	if ( (ret = ppa_hsel_set_qos_shaper_entry( &tmu_shape_cfg, 0, hal_id) ) == PPA_SUCCESS ) {
 		s->phys_shaperid = tmu_shape_cfg.phys_shaperid;
@@ -3422,7 +3322,6 @@ EXPORT_SYMBOL(ppa_ioctl_delete_qos_queue);
 EXPORT_SYMBOL(ppa_ioctl_qos_init_cfg);
 EXPORT_SYMBOL(ppa_ioctl_add_wmm_qos_queue);
 EXPORT_SYMBOL(ppa_ioctl_delete_wmm_qos_queue);
-EXPORT_SYMBOL(g_eth_class_prio_map);
 EXPORT_SYMBOL(ppa_get_qos_qnum);
 EXPORT_SYMBOL(ppa_ioctl_get_qos_qnum);
 EXPORT_SYMBOL(ppa_get_qos_mib);

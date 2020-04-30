@@ -455,7 +455,7 @@ static int32_t mpe_hal_generic_hook(PPA_GENERIC_HOOK_CMD cmd, void *buffer, uint
 	} 
 	case PPA_GENERIC_HAL_GET_HAL_VERSION: {
 		PPA_VERSION *v = (PPA_VERSION *)buffer;
-		strcpy(v->version, "1.0.1"); 
+		strncpy(v->version, "1.0.1", 6);
 		return PPA_SUCCESS;
 	}
 	case PPA_GENERIC_HAL_GET_PPE_FW_VERSION: {
@@ -639,7 +639,8 @@ static char * inet_ntop6(const unsigned char *src, char *dst, u32 size) {
     if ((tp - tmp) > size) {
         return (NULL);
     }
-    strcpy(dst, tmp);
+    strncpy(dst, tmp, (size - 1));
+    dst[size - 1] = '\0';
     return (dst);
 }
 
@@ -2313,13 +2314,13 @@ int32_t mpe_hal_ipsec_test(void)
 	xfrm->id.spi = 0x40002016;
 	xfrm->id.proto = 50;
 
-	strcpy(xfrm_crypt->alg_name, "cbc(aes)");
+	strncpy(xfrm_crypt->alg_name, "cbc(aes)", 9);
 	xfrm_crypt->alg_key_len = 128;
 	xfrm_crypt->alg_key[0] = "c994ab76 99a0a6d2 7667ab17 2b00f96f";
 
 	xfrm->ealg = xfrm_crypt;
 
-	strcpy(xfrm_auth->alg_name, "hmac(sha1)");
+	strncpy(xfrm_auth->alg_name, "hmac(sha1)", 11);
 	xfrm_auth->alg_key_len = 160; /*5 * 4;*/
 	xfrm_auth->alg_key[0] = "3b3b34bb 069198a7 a63a1b90 a45d1c27 9c3f4e30";
 
@@ -2344,13 +2345,13 @@ int32_t mpe_hal_ipsec_test(void)
 	xfrm_out->id.spi = 0x069f2b79;
 	xfrm_out->id.proto = 50;
 
-	strcpy(xfrm_crypt->alg_name, "cbc(aes)");
+	strncpy(xfrm_crypt->alg_name, "cbc(aes)", 9);
 	xfrm_crypt->alg_key_len = 128; /* 4 * 4; */
 	xfrm_crypt->alg_key[0] = "0a3a5878 1831add8 5e5ee250 12569e35";
 
 	xfrm_out->ealg = xfrm_crypt;
 
-	strcpy(xfrm_auth->alg_name, "hmac(sha1)");
+	strncpy(xfrm_auth->alg_name, "hmac(sha1)", 11);
 	xfrm_auth->alg_key_len = 160; /*5 * 4;*/
 	xfrm_auth->alg_key[0] = "79f4877b aabe4bf4 b72c0a33 b7c11924 8d0075d3";
 

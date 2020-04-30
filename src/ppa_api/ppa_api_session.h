@@ -163,7 +163,7 @@ typedef struct {
 	uint16_t		nat_port;		 	/*	Port to be replaced by NAT if NAT applies */
 	uint16_t		pppoe_session_id; 		/*PPPoE session id for a PPPoE egress traffic */
 	uint16_t		new_vci;			/*outgoing vlan*/
-	uint16_t		out_vlan_tag;			/*Outer vlan tag for stacked vlan*/
+	uint32_t		out_vlan_tag;			/*Outer vlan tag for stacked vlan*/
 	uint32_t		priority;	 		/*skb priority	*/
 	uint32_t		mark;		 		/*skb mark value */
 	uint32_t		extmark;			/*skb ext mark value*/
@@ -330,6 +330,11 @@ static inline uint32_t ppa_is_6rdSession(struct uc_session_node *const p_item)
 static inline uint32_t ppa_is_DsLiteSession(struct uc_session_node *const p_item)
 {
 	return (p_item->flags & SESSION_TUNNEL_DSLITE);
+}
+
+static inline uint32_t ppa_is_MapESession(struct uc_session_node *const p_item)
+{
+	return ((p_item->flags & SESSION_TUNNEL_DSLITE) && (p_item->flags & SESSION_VALID_NAT_IP));
 }
 
 static inline uint32_t ppa_is_IpsecSession(struct uc_session_node *const p_item)

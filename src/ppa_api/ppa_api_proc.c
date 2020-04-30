@@ -240,7 +240,7 @@ extern ppa_tunnel_entry *g_tunnel_table[MAX_TUNNEL_ENTRIES];
 extern uint32_t g_tunnel_counter[MAX_TUNNEL_ENTRIES];
 static short ppa_port_queue_num_status;
 #define MAX_CLASSPRO_BUF_SIZE 2048
-extern int g_eth_class_prio_map[2][16];
+extern int g_eth_class_prio_map[MAX_WLAN_DEV][MAX_TC_NUM];
 static struct file_operations g_proc_file_classprio_seq_fops = {
 	.owner		= THIS_MODULE,
 	.open		= proc_read_classprio_seq_open,
@@ -603,7 +603,7 @@ static int proc_read_classprio(struct seq_file *seq, void *v)
 	/* skb->priority to firmware queue map (for LAN interface, QId is virtual one maitained by driver)*/
 	seq_printf(seq,	"Class to Priority Map:\n");
 	seq_printf(seq,	"  class	 :  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15\n");
-	for ( i = 0; i < 2; i++ ) {
+	for ( i = 0; i < MAX_WLAN_DEV; i++ ) {
 		seq_printf(seq,	"  wlan%d	 :", i);
 		for ( j = 0; j < NUM_ENTITY(g_eth_class_prio_map[i]); j++ )
 			seq_printf(seq," %2d", g_eth_class_prio_map[i][j]);
@@ -663,7 +663,7 @@ static ssize_t proc_write_classprio_seq(struct file *file, const char __user *bu
 				ignore_space(&p2, &len);
 				class = get_number(&p2, &len, 0);
 				ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"class = %d", class);
-				if ( port > 0 && port <= 1 && class >= 0 && class < NUM_ENTITY(g_eth_class_prio_map[port])) {
+				if ( port >= 0 && port < MAX_WLAN_DEV && class >= 0 && class < NUM_ENTITY(g_eth_class_prio_map[port])) {
 					if ( prio >= 0 )
 						g_eth_class_prio_map[port][class] = prio;
 				} else {
@@ -674,7 +674,7 @@ static ssize_t proc_write_classprio_seq(struct file *file, const char __user *bu
 				ignore_space(&p2, &len);
 				prio = get_number(&p2, &len, 0);
 				ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"prio = %d", prio);
-				if ( port > 0 && port <= 1 && prio >= 0 && prio < 8 ) {
+				if ( port >= 0 && port < MAX_WLAN_DEV && prio >= 0 && prio < MAX_PRIO_NUM ) {
 					if ( class >= 0 )
 						g_eth_class_prio_map[port][class] = prio;
 				} else {
@@ -1156,7 +1156,7 @@ static ssize_t proc_write_hook(struct file *file, const char __user *buf, size_t
 					if ( strcmp(wanif_info[i].ifname, "eth1") == 0 )
 						wanif_info[i].ifname = NULL;
 			} else if ( ppe_fw.itf == ITF_2MII_PTMWAN
-				&& (ppe_fw.itf == 0 && ppe_fw.type == TYPE_E5) ){
+				|| (ppe_fw.itf == 0 && ppe_fw.type == TYPE_E5) ){
 				/*  E5*/
 				ppa_init_info.max_lan_source_entries = 192;
 				ppa_init_info.max_wan_source_entries = 192;

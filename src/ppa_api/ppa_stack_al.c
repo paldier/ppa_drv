@@ -1059,13 +1059,13 @@ int32_t ppa_get_physical_if(PPA_NETIF *netif, PPA_IFNAME *ifname, PPA_IFNAME phy
 	if ( !netif )
 		netif = ppa_get_netif(ifname);
 
-	if (!netif || strlen(netif->name) == 0)
+	if (!netif || strnlen(netif->name, PPA_IF_NAME_SIZE) == 0)
 		return PPA_EINVAL;
 
 	if( ppa_check_is_ppp_netif(netif) )  {
 
 		if(ppa_if_is_pppoa(netif, NULL)) {
-			strcpy(phy_ifname, netif->name);
+			ppa_strncpy(phy_ifname, netif->name, PPA_IF_NAME_SIZE);
 			ret = PPA_SUCCESS;
 			goto ppp_ret;
 		}
@@ -1136,7 +1136,7 @@ ppp_ret:
 		return PPA_FAILURE;
 	}
 
-	strcpy(phy_ifname, netif->name);
+	ppa_strncpy(phy_ifname, netif->name, PPA_IF_NAME_SIZE);
 	return PPA_SUCCESS;
 }
 
@@ -1217,7 +1217,7 @@ int32_t ppa_vlan_get_underlying_if(PPA_NETIF *netif, PPA_IFNAME *ifname, PPA_IFN
 	 * as BR2684_VLAN :-)
 	 */
 	if ( (netif->priv_flags & IFF_802_1Q_VLAN) ) {
-		strcpy(underlying_ifname, VLAN_DEV_INFO(netif)->real_dev->name);
+		ppa_strncpy(underlying_ifname, VLAN_DEV_INFO(netif)->real_dev->name, PPA_IF_NAME_SIZE);
 		ret=PPA_SUCCESS;
 	}
 #endif
@@ -1225,7 +1225,7 @@ int32_t ppa_vlan_get_underlying_if(PPA_NETIF *netif, PPA_IFNAME *ifname, PPA_IFN
 #if defined(CONFIG_WAN_VLAN_SUPPORT)
 	if ( (netif->priv_flags & IFF_BR2684_VLAN) ) {
 		/* br2684 does not create a new netdevice, so name is same */
-		strcpy(underlying_ifname, netif->name);
+		ppa_strncpy(underlying_ifname, netif->name, PPA_IF_NAME_SIZE);
 		ret=PPA_SUCCESS;
 	}
 #endif
@@ -1244,7 +1244,7 @@ int32_t ppa_vlan_get_physical_if(PPA_NETIF *netif, PPA_IFNAME *ifname, PPA_IFNAM
 	while ( ppa_vlan_get_underlying_if(NULL, ifname_tmp[pos], ifname_tmp[pos ^ 0x01]) == PPA_SUCCESS )
 		pos ^= 0x01;
 
-	strcpy(phy_ifname, ifname_tmp[pos]);
+	ppa_strncpy(phy_ifname, ifname_tmp[pos], PPA_IF_NAME_SIZE);
 
 	return PPA_SUCCESS;
 #else
@@ -2070,19 +2070,11 @@ uint32_t ppa_copy_to_user(void PPA_USER *to, const void *from, uint32_t  n)
 {
 	return copy_to_user(to, from, n);
 }
-uint8_t *ppa_strcpy(uint8_t *dest, const uint8_t *src)
-{
-	return strcpy(dest, src);
-}
 
 uint8_t *ppa_strncpy(uint8_t *dest, const uint8_t *src, PPA_SIZE_T n)
 {
-	return strncpy(dest, src, n);
-}
-
-PPA_SIZE_T  ppa_strlen(const uint8_t *s)
-{
-	return strlen(s);
+	dest[n - 1] = '\0';
+	return strncpy(dest, src, (n - 1));
 }
 
 int32_t ppa_str_cmp(char *str1,char *str2)
@@ -2542,9 +2534,7 @@ EXPORT_SYMBOL(ppa_buf_get_next);
 EXPORT_SYMBOL(ppa_buf_free);
 EXPORT_SYMBOL(ppa_copy_from_user);
 EXPORT_SYMBOL(ppa_copy_to_user);
-EXPORT_SYMBOL(ppa_strcpy);
 EXPORT_SYMBOL(ppa_strncpy);
-EXPORT_SYMBOL(ppa_strlen);
 EXPORT_SYMBOL(ppa_str_cmp);
 #if defined(CONFIG_PPA_MPE_IP97)
 EXPORT_SYMBOL(ppa_is_ipv4_ipv6);

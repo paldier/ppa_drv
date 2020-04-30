@@ -145,6 +145,7 @@ extern PPA_HOOK_INFO g_expfn_table[PPA_HOOK_FN_MAX];
 
 extern PPA_NETIF* ppa_get_netif_for_ppa_ifid_rpfn(uint32_t if_id);
 extern int32_t ppa_directpath_send_rpfn(uint32_t rx_if_id, PPA_SKBUF *skb, int32_t len, uint32_t flags);
+extern int32_t ppa_register_for_qos_class2prio_rpfn(int32_t port_id, struct net_device *netif, PPA_QOS_CLASS2PRIO_CB class2prio_cbfun, uint32_t flags);
 
 #if !defined (PPA_WRPFN_DEFINITION)
 #define WRPFN_1(RT, FNAME, T1, P1, IDX)					 \
@@ -316,9 +317,6 @@ WRPFN_3(int32_t, ppa_get_netif_accel_stats_rpfn, PPA_IFNAME*, ifname, PPA_NETIF_
 #endif
 #if IS_ENABLED(CONFIG_PPA_API_DIRECTCONNECT)
 WRPFN_4(int32_t, ppa_disconn_if_rpfn, PPA_NETIF*, netif, PPA_DP_SUBIF*, subif, uint8_t*, mac, uint32_t, flags, PPA_DISCONN_IF_FN)
-#if IS_ENABLED(CONFIG_PPA_QOS) && IS_ENABLED(WMM_QOS_CONFIG)
-WRPFN_4(int32_t, ppa_register_for_qos_class2prio_rpfn, int32_t, port_id, PPA_NETIF*, netif, PPA_QOS_CLASS2PRIO_CB, qos_class2prio_cb, uint32_t, flags, PPA_REG_CLASS2PRIO_FN)
-#endif
 #endif
 #if IS_ENABLED(CONFIG_PPA_API_DIRECTPATH)
 WRPFN_2(int32_t, ppa_phys_port_add_hook_rpfn, PPA_IFNAME*, ifname, uint32_t, port, PPA_PHYS_PORT_ADD_FN)

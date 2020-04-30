@@ -228,6 +228,8 @@ void ppa_phys_port_stop_iteration(void);
 
 /*	network interface
  */
+void ppa_manual_if_lock_list(void);
+void ppa_manual_if_unlock_list(void);
 int32_t ppa_netif_add(PPA_IFNAME *, int, struct netif_info **, PPA_IFNAME *, int);
 void ppa_netif_remove(PPA_IFNAME *, int);
 int32_t ppa_netif_lookup(PPA_IFNAME *, struct netif_info **);

@@ -82,6 +82,7 @@ volatile uint8_t g_tcp_litepath_enabled=0;
 #if !IS_ENABLED(CONFIG_SOC_GRX500)
 #define FLG_HDR_OFFSET	64
 #endif
+#define UDP_HDR_LEN	8
 #define IPV4_HDR_LEN	20	/*assuming no option fields are present*/
 #define IPV6_HDR_LEN	40
 #define ETH_HLEN	14	/* Total octets in header.	 */
@@ -93,6 +94,21 @@ volatile uint8_t g_tcp_litepath_enabled=0;
 #define PPPOE_IPV4_TAG	0x0021
 #define PPPOE_IPV6_TAG	0x0057
 #define VLAN_HLEN	4
+#define PPP_LEN		4
+#define L2TP_HLEN	38 /* IPv4=20 + UDP=8 + L2TP_HDR=6 + PPP_HDR=4 */
+#define L2TP_HDR_LEN	6
+#define L2TP_UDP_PORT	1701
+
+/* L2TP header constants */
+#ifndef L2TP_HDRFLAG_L
+#define L2TP_HDRFLAG_L	0x4000
+#endif
+#ifndef L2TP_HDRFLAG_S
+#define L2TP_HDRFLAG_S	0x0800
+#endif
+#ifndef L2TP_HDRFLAG_O
+#define L2TP_HDRFLAG_O	0x0200
+#endif
 
 #if IS_ENABLED(CONFIG_SOC_GRX500)
 #define PARSER_OFFSET_NUM	40
@@ -190,9 +206,9 @@ struct flag_header {
 #define IsValidVlanIns(flags)		((flags) & SESSION_VALID_VLAN_INS )
 #define IsValidOutVlanIns(flags)	((flags) & SESSION_VALID_OUT_VLAN_INS)
 #define IsIpv6Session(flags)		((flags) & SESSION_IS_IPV6)
-#define IsTunneledSession(flags)	((flags) & (SESSION_TUNNEL_DSLITE | SESSION_TUNNEL_6RD))
+#define IsTunneledSession(flags)	((flags) & (SESSION_TUNNEL_DSLITE | SESSION_TUNNEL_6RD | SESSION_VALID_PPPOL2TP))
 #define IsDsliteSession(flags)		((flags) & SESSION_TUNNEL_DSLITE )
-#define Is6rdSession(flags)		((flags) &	SESSION_TUNNEL_6RD)
+#define Is6rdSession(flags)		((flags) & SESSION_TUNNEL_6RD)
 #define IsL2TPSession(flags)		((flags) & SESSION_VALID_PPPOL2TP)
 #define IsValidNatIP(flags)		((flags) & SESSION_VALID_NAT_IP)
 #define IsBridgedSession(flags)		((flags) & SESSION_FLAG2_BRIDGED_SESSION) 
@@ -204,6 +220,9 @@ static int flag_header_ipv6( struct flag_header *pFlagHdr,
 static int flag_header_ipv4( struct flag_header *pFlagHdr, 
 					const unsigned char* data,
 					unsigned char data_offset);
+static int flag_header_l2tp( struct flag_header *pFlagHdr,
+                              const unsigned char* data,
+                              unsigned char data_offset);
 
 typedef unsigned int	uint32_t;
 typedef unsigned short	uint16_t;
@@ -285,7 +304,13 @@ unsigned short swa_sw_out_header_len(uint32_t flags, uint32_t flag2,
 			} else {
 				*ethtype = ETH_P_IPV6; 
 			}
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+		} else if (IsL2TPSession(flags)) {
+			if (IsLanSession(flags))
+				headerlength += L2TP_HLEN;
+#endif
 		}
+
 		if( IsLanSession(flags) && IsPppoeSession(flags) ) {
 			headerlength += PPPOE_HLEN;
 			*ethtype = ETH_P_PPP_SES;
@@ -376,6 +401,79 @@ static inline int get_6rd_tunnel_header(PPA_NETIF *dev, struct iphdr* iph)
 	return 0;
 }
 
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+static
+void form_IPv4_header(struct iphdr *iph,
+		uint32_t src_ip,
+		uint32_t dst_ip,
+		uint32_t protocol_type,
+		uint16_t data_len)
+{
+	ppa_memset((void *)iph, 0, sizeof(struct iphdr));
+
+	iph->version  = 4;
+	iph->protocol = protocol_type;
+	iph->ihl      = 5;
+	iph->ttl      = 64;
+	iph->saddr    = src_ip;
+	iph->daddr    = dst_ip;
+
+	iph->tot_len  = data_len;
+
+	iph->check    = ip_fast_csum((unsigned char *)iph, iph->ihl);
+}
+
+static
+void form_UDP_header(struct udphdr *udph,
+		uint16_t sport,
+		uint16_t dport,
+		uint16_t len)
+{
+	ppa_memset((void *)udph, 0, sizeof(struct udphdr));
+	udph->source = sport;
+	udph->dest   = dport;
+	udph->len    = len;
+	udph->check  = 0; /* Skip UDP header checksum as optional */
+}
+
+static uint32_t ppa_form_l2tp_tunnel(const struct uc_session_node *p_item,
+		uint8_t* hdr, unsigned isIPv6)
+{
+	struct iphdr iph;
+	struct udphdr udph;
+	uint32_t outer_srcip = 0;
+	uint32_t outer_dstip = 0;
+
+	/* adding IP header to templet buffer */
+	ppa_pppol2tp_get_src_addr(p_item->tx_if, &outer_srcip);
+	ppa_pppol2tp_get_dst_addr(p_item->tx_if, &outer_dstip);
+	form_IPv4_header(&iph, outer_srcip, outer_dstip, 17, L2TP_HLEN); /* need to check from where can i get protocol */
+	ppa_memcpy(hdr, &iph, sizeof(struct iphdr));
+	hdr += IPV4_HDR_LEN;
+
+	/* adding UDP header to templet buffer */
+	form_UDP_header(&udph, L2TP_UDP_PORT, L2TP_UDP_PORT, 18);
+	ppa_memcpy(hdr, &udph, sizeof(struct udphdr));
+	hdr += UDP_HDR_LEN;
+
+	/* adding L2TP header to templet buffer */
+	*((uint16_t *)hdr) = htons(0x0002);
+	*((uint16_t*)(hdr + 2)) = htons(p_item->pkt.pppol2tp_tunnel_id); /* copying l2tp tunnel_id @ appropriate offset */
+	*((uint16_t*)(hdr + 4)) = htons(p_item->pkt.pppol2tp_session_id) ; /* copying l2tp session_id @ appropriate offset */
+	hdr += L2TP_HDR_LEN;
+
+	/* adding ppp header to templet buffer */
+	*(hdr) = 0xff;
+	*(hdr + 1) = 0x03;
+	if (isIPv6)
+		*((uint16_t*)(hdr + 2)) = htons(PPPOE_IPV6_TAG);
+	else
+		*((uint16_t*)(hdr + 2)) = htons(PPPOE_IPV4_TAG);
+
+	return L2TP_HLEN;
+}
+#endif
+
 /* This function reads the necessary information for software acceleation from	skb and updates the p_item 
 *
 */
@@ -397,10 +495,16 @@ int32_t swac_update_session_meta(PPA_SESSMETA_INFO *metainfo)
 
 	ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %d\n", __FUNCTION__, __LINE__);
 	/* Following sessions are excluded from software acceleration */
+	/* No complementary processing for routing sessions */
+	if ((p_item->flags & SESSION_ADDED_IN_HW) && !(p_item->flags & SESSION_FLAG2_CPU_BOUND)) {
+		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT, "%s %d\n", __FUNCTION__, __LINE__);
+		return PPA_FAILURE;
+	}
+
 	/* GRE sessions (skip processing) */
 	if (IsGreSession(p_item->flag2)) {
 		ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %d\n", __FUNCTION__, __LINE__);
- 		return PPA_SUCCESS;
+		return PPA_SUCCESS;
 	}
 
 	/*if the header is already allocated return*/
@@ -476,6 +580,18 @@ int32_t swac_update_session_meta(PPA_SESSMETA_INFO *metainfo)
 	} else if( IsTunneledSession(p_item->flags) ) {
 		swaHdr.tot_hdr_len = tlen;
 
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+		if (IsL2TPSession(p_item->flags)) {
+			swaHdr.type = SW_ACC_TYPE_L2TP;
+			if (IsLanSession(p_item->flags)) {
+				swaHdr.network_offset = tlen - L2TP_HLEN;
+				swaHdr.transport_offset = swaHdr.network_offset + IPV4_HDR_LEN;
+			} else {
+				swaHdr.network_offset = tlen;
+				swaHdr.transport_offset = tlen + ((isIPv6) ? IPV6_HDR_LEN : IPV4_HDR_LEN);
+			}
+		} else
+#endif
 		if( IsDsliteSession(p_item->flags) ) {
 			swaHdr.type = SW_ACC_TYPE_DSLITE;
 			if( IsLanSession(p_item->flags) ) {
@@ -561,8 +677,7 @@ int32_t swac_update_session_meta(PPA_SESSMETA_INFO *metainfo)
 			/* If the destination interface is a LAN VLAN interface under bridge the 
 			below steps header is not needed */
 			if (!(p_item->flags & SESSION_ADDED_IN_HW) && IsValidOutVlanIns(p_item->flags) && IsLanSession(p_item->flags)) {
-				*((uint16_t*)(hdr)) = htons(ETH_P_8021Q); 
-				*((uint32_t*)(hdr+2)) = htonl(p_item->pkt.out_vlan_tag); 
+				*((uint32_t*)(hdr)) = htonl(p_item->pkt.out_vlan_tag);
 				hdr += VLAN_HLEN;
 			}
 			if (!(p_item->flags & SESSION_ADDED_IN_HW) && IsValidVlanIns(p_item->flags)) {
@@ -632,6 +747,10 @@ int32_t swac_update_session_meta(PPA_SESSMETA_INFO *metainfo)
 #endif
 				ppa_memcpy(p_swaHdr->hdr+p_swaHdr->network_offset, &iph, sizeof(iph));
 			}
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+			else if (IsL2TPSession(p_item->flags))
+				ppa_form_l2tp_tunnel(p_item, hdr, isIPv6);
+#endif
 		}
 	}
 
@@ -755,12 +874,70 @@ void swac_del_routing_entry(PPA_ROUTING_INFO *route)
 	ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,"%s %d deleted swacc session\n", __FUNCTION__, __LINE__);
 }
 
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+static int flag_header_l2tp( struct flag_header *pFlagHdr,
+                              const unsigned char* data,
+                              unsigned char data_offset)
+{
+	int isValid = 1;
+	uint16_t l2tp_hdr_flags;
+	uint8_t l2tp_opt_len = 0;
+	uint8_t l2tp_tot_len = 0;
+	uint16_t ppp_proto;
+
+#if IS_ENABLED(CONFIG_SOC_GRX500)
+	pFlagHdr->is_l2tp_data = 1;
+#endif
+
+	/* Calculate L2TP optional length from header flags */
+	l2tp_hdr_flags = ntohs(*((__be16 *)data));
+	if (l2tp_hdr_flags & L2TP_HDRFLAG_L)
+		l2tp_opt_len += 2;
+	if (l2tp_hdr_flags & L2TP_HDRFLAG_S)
+		l2tp_opt_len += 4;
+	if (l2tp_hdr_flags & L2TP_HDRFLAG_O)
+		l2tp_opt_len += 2;
+
+	l2tp_tot_len = (L2TP_HDR_LEN + l2tp_opt_len + PPP_LEN);
+	data_offset += l2tp_tot_len;
+	ppp_proto = ntohs(*((uint16_t *)(data + l2tp_tot_len - 2)));
+	switch (ppp_proto) {
+	case PPPOE_IPV4_TAG:
+		pFlagHdr->is_inner_ipv6 = 0;
+#if IS_ENABLED(CONFIG_SOC_GRX500)
+		pFlagHdr->offset[PARSER_IPV6_INNER_OFFSET_IDX] = 0;
+		pFlagHdr->is_inner_ipv4 = 1;
+		pFlagHdr->offset[PARSER_IPV4_INNER_OFFSET_IDX] = data_offset;
+#endif
+		isValid = flag_header_ipv4(pFlagHdr, (data + l2tp_tot_len), data_offset);
+		break;
+	case PPPOE_IPV6_TAG:
+		pFlagHdr->is_inner_ipv4 = 0;
+#if IS_ENABLED(CONFIG_SOC_GRX500)
+		pFlagHdr->offset[PARSER_IPV4_INNER_OFFSET_IDX] = 0;
+		pFlagHdr->is_inner_ipv6 = 1;
+		pFlagHdr->offset[PARSER_IPV6_INNER_OFFSET_IDX] = data_offset;
+#endif
+		isValid = flag_header_ipv6(pFlagHdr, (data + l2tp_tot_len), data_offset);
+		break;
+	default:
+		isValid = 0;
+		break;
+	}
+
+	return isValid;
+}
+#endif
+
 static int flag_header_ipv4( struct flag_header *pFlagHdr, const unsigned char* data,
 					unsigned char data_offset)
 {
 	int isValid=1;
 	struct iphdr *iph = (struct iphdr*)(data);
 	struct tcphdr *tcph;
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+	struct udphdr *udph;
+#endif
 
 #if !IS_ENABLED(CONFIG_SOC_GRX500)
 	pFlagHdr->is_inner_ipv4 = 1;
@@ -768,7 +945,14 @@ static int flag_header_ipv4( struct flag_header *pFlagHdr, const unsigned char* 
 #endif
 	switch(iph->protocol) {
 	case IPPROTO_UDP: {
-		pFlagHdr->is_udp = 1;
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+		udph = (struct udphdr *)(data + IPV4_HDR_LEN);
+		if ((udph->source == L2TP_UDP_PORT) && (udph->dest == L2TP_UDP_PORT)) {
+			data_offset += (IPV4_HDR_LEN + UDP_HDR_LEN);
+			isValid = flag_header_l2tp(pFlagHdr, (data + IPV4_HDR_LEN + UDP_HDR_LEN), data_offset);
+		} else
+#endif
+			pFlagHdr->is_udp = 1;
 		break;
 	}
 	case IPPROTO_TCP: {
@@ -893,14 +1077,14 @@ static int set_flag_header( struct flag_header *pFlagHdr,
 		}
 		break;
 	}
-#ifdef CONFIG_PPA_PUMA7
 	case ETH_P_8021Q: {
+#if !(IS_ENABLED(CONFIG_SOC_GRX500))
 		pFlagHdr->ip_inner_offset += 4;
+#endif
 		pFlagHdr->is_vlan = 1;
 		isValid = set_flag_header(pFlagHdr,*(unsigned short*)(data+2),data+4, data_offset+4);
 		break;
 	}
-#endif
 	default:
 		isValid=0;
 		break;
@@ -1272,7 +1456,6 @@ static inline int sw_mod_ltcp(PPA_BUF* skb, t_sw_hdr	*swa, struct iphdr *iph)
 
 	swa_dump_skb(skb->data,128,0);
 	return PPA_SUCCESS;
-	/*printk("in %s %d iph->len = %d\n",__FUNCTION__, __LINE__, iph->tot_len);*/
 }
 
 #if IS_ENABLED(CONFIG_LTQ_TOE_DRIVER) 
@@ -1343,6 +1526,134 @@ static int sw_mod_ltcp_skb( PPA_BUF *skb, struct uc_session_node *p_item)
 }
 #endif
 
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+static int sw_mod_l2tp_skb(PPA_SKBUF *skb,
+                           struct uc_session_node *p_item)
+{
+	int out_len = 0;
+	t_sw_hdr *swa;
+	struct iphdr org_iph, *iph, *out_iph;
+	struct ipv6hdr *ip6h;
+	struct udphdr *udph;
+	uint16_t orig_len = 0;
+	uint16_t out_iph_id = 0;
+	bool is_nat_flag = false;
+
+	swa = (t_sw_hdr*)(p_item->session_meta);
+
+	skb_push(skb, swa->tot_hdr_len);
+	ppa_memcpy(skb->data, swa->hdr, swa->tot_hdr_len);
+
+	if (IsIpv6Session(p_item->flags)) {
+		ip6h = (struct ipv6hdr *)skb_network_header(skb);
+
+		/* Decrement hop limit */
+		ip6h->hop_limit--;
+
+		orig_len = ntohs(ip6h->payload_len) + IPV6_HDR_LEN;
+	} else {
+		iph = (struct iphdr *)skb_network_header(skb);
+
+		/* NAT present */
+		if (p_item->pkt.nat_src_ip.ip && IsValidNatIP(p_item->flags)) {
+			/*copy original IP header to backup*/
+			ppa_memcpy(&org_iph, iph, sizeof(org_iph));
+
+			/* replace source ip since its LAN session */
+			if (IsLanSession(p_item->flags))
+				ppa_memcpy(&iph->saddr, &p_item->pkt.nat_src_ip.ip, 4);
+
+			/* replace destination ip */
+			else
+				ppa_memcpy(&iph->daddr, &p_item->pkt.nat_src_ip.ip, 4);
+
+			is_nat_flag = true;
+		}
+
+		/* Decrement ttl of inner ip and recalculate checksum as ttl is changed */
+		iph->ttl--;
+		iph->check = 0;
+		iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
+
+		if (is_nat_flag) {
+			/* calculate tcp/udp checksum as the pseudo header has changed
+			 * we compute only partial checksum using the original value of saddr daddr and port */
+			switch (iph->protocol) {
+			case IPPROTO_UDP: {
+				struct udphdr *udph;
+
+				udph = (struct udphdr *)((__u32 *)iph + iph->ihl);
+				if (udph->check) {
+					inet_proto_csum_replace4(&udph->check, skb, org_iph.saddr, iph->saddr, 1);
+					inet_proto_csum_replace4(&udph->check, skb, org_iph.daddr, iph->daddr, 1);
+					if (p_item->pkt.nat_port && (p_item->flags & SESSION_VALID_NAT_PORT)) {
+						if (p_item->flags & SESSION_LAN_ENTRY) {
+							inet_proto_csum_replace2(&udph->check, skb, udph->source, p_item->pkt.nat_port, 0);
+							udph->source = p_item->pkt.nat_port;
+						} else {
+							inet_proto_csum_replace2(&udph->check, skb, udph->dest, p_item->pkt.nat_port, 0);
+							udph->dest = p_item->pkt.nat_port;
+						}
+					}
+				}
+				break;
+			}
+			case IPPROTO_TCP: {
+				struct tcphdr *tcph;
+
+				tcph = (struct tcphdr *)((__u32 *)iph + iph->ihl);
+				inet_proto_csum_replace4(&tcph->check, skb, org_iph.saddr, iph->saddr, 1);
+				inet_proto_csum_replace4(&tcph->check, skb, org_iph.daddr, iph->daddr, 1);
+				if (p_item->pkt.nat_port && (p_item->flags & SESSION_VALID_NAT_PORT)) {
+					if (p_item->flags & SESSION_LAN_ENTRY) {
+						inet_proto_csum_replace2(&tcph->check, skb, tcph->source, p_item->pkt.nat_port, 0);
+						tcph->source = p_item->pkt.nat_port;
+					} else {
+						inet_proto_csum_replace2(&tcph->check, skb, tcph->dest, p_item->pkt.nat_port, 0);
+						tcph->dest = p_item->pkt.nat_port;
+					}
+				}
+				break;
+			}
+			default:
+				break;
+			}
+		}
+
+		orig_len = ntohs(iph->tot_len);
+		out_iph_id = iph->id;
+	}
+
+	if (IsLanSession(p_item->flags)) {
+
+		/*Move to outer IP header and copy the id from original ip header */
+		/*calculate the header checksum for outer ip which we inserted*/
+		udph = (struct udphdr *)(skb->data+swa->transport_offset);
+		udph->len += htons(orig_len);
+
+		out_iph = (struct iphdr *)(skb->data+swa->network_offset);
+		out_iph->tot_len = skb->len-swa->network_offset;
+		out_iph->id = out_iph_id ? out_iph_id : out_iph->id;
+		out_iph->check = 0;
+		out_iph->check = ip_fast_csum((unsigned char *)out_iph, out_iph->ihl);
+
+		out_len = out_iph->tot_len;
+	} else
+		out_len = skb->len;
+
+	/* reset the skb mac, network and transport header */
+	skb_set_mac_header(skb, 0);
+	skb_set_network_header(skb, swa->network_offset);
+	skb_set_transport_header(skb, swa->transport_offset);
+
+	// set the iif
+	skb->dev = swa->tx_if;
+	skb->skb_iif = skb->dev->ifindex;
+
+	return out_len;
+}
+#endif
+
 typedef int (*sw_acc_type_fn)(PPA_BUF *skb, struct uc_session_node *p_item);
 static sw_acc_type_fn afn_SoftAcceleration[SW_ACC_TYPE_MAX] = {
 	sw_mod_ipv4_skb,
@@ -1353,19 +1664,20 @@ static sw_acc_type_fn afn_SoftAcceleration[SW_ACC_TYPE_MAX] = {
 #if IS_ENABLED(CONFIG_PPA_TCP_LITEPATH)
 	sw_mod_ltcp_skb,
 #if IS_ENABLED(CONFIG_LTQ_TOE_DRIVER)
-	sw_mod_ltcp_skb_lro
+	sw_mod_ltcp_skb_lro,
 #endif
+#endif
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+	sw_mod_l2tp_skb
 #endif
 };
 
+#ifdef CONFIG_NET_CLS_ACT
 int32_t swa_check_ingress(PPA_SKBUF *skb)
 {
-#ifdef CONFIG_NET_CLS_ACT
 	return check_ingress(skb);
-#else
-	return -1;
-#endif
 }
+#endif
 
 PPA_SKBUF* swa_handle_ing(PPA_SKBUF	*skb)
 {
@@ -1468,11 +1780,10 @@ int32_t ppa_do_sw_acceleration(PPA_SKBUF *skb)
 			/* 
 			 * Can the session be accelaratable ? 
 			 *	- Session must be added into sotware path 
-			 *	- Not L2TP
 			 */ 
-			if( IsL2TPSession(p_item->flags) || ( IsGreSession(p_item->flag2)) || 
-					!(IsSoftwareAccelerated(p_item->flags)) ||
-					((skb->len > p_item->mtu) 
+			if ((IsGreSession(p_item->flag2)) ||
+				!(IsSoftwareAccelerated(p_item->flags)) ||
+				((skb->len > p_item->mtu)
 #if IS_ENABLED(CONFIG_LTQ_TOE_DRIVER)
 					&& !(p_item->flag2 & SESSION_FLAG2_LRO) 
 #endif
@@ -1491,6 +1802,7 @@ int32_t ppa_do_sw_acceleration(PPA_SKBUF *skb)
 #else /* CONFIG_NETWORK_EXTMARK */
 				skb->mark= p_item->pkt.mark;
 #endif /* CONFIG_NETWORK_EXTMARK */
+#ifdef CONFIG_NET_CLS_ACT
 				if (!swa_check_ingress(skb)) {
 					skb_set_network_header(skb, swa->network_offset); 
 					skb_set_transport_header(skb, swa->transport_offset);
@@ -1500,6 +1812,7 @@ int32_t ppa_do_sw_acceleration(PPA_SKBUF *skb)
 						goto skip_accel;
 					}
 				}
+#endif
 				/* If headroom is not enough, increase the headroom */
 				orighdrlen = get_ip_inner_offset(flg_hdr);
 				orighdrlen += (IPPROTO_IP == get_pf(flg_hdr))?IPV4_HDR_LEN:IPV6_HDR_LEN; 
@@ -1552,6 +1865,7 @@ int32_t ppa_do_sw_acceleration(PPA_SKBUF *skb)
 			skb->mark |= p_item->pkt.mark;
 #if IS_ENABLED(CONFIG_NETWORK_EXTMARK)
 			skb->extmark = swa->extmark;
+			SET_DATA_FROM_MARK_OPT(skb->extmark, FILTERTAP_MASK, FILTERTAP_START_BIT_POS, 0x1);
 #else /* CONFIG_NETWORK_EXTMARK */
 			skb->mark = swa->mark;
 #endif /* CONFIG_NETWORK_EXTMARK */
@@ -1810,6 +2124,12 @@ static int32_t swac_hal_generic_hook(PPA_GENERIC_HOOK_CMD cmd, void *buffer, uin
 		if((res = ppa_drv_register_cap(TUNNEL_DSLITE, 4, SWAC_HAL)) != PPA_SUCCESS)
 			pr_err("ppa_drv_register_cap returned failure for capability TUNNEL_DSLITE!!!\n");
 
+		if ((res = ppa_drv_register_cap(TUNNEL_L2TP_US, 4, SWAC_HAL)) != PPA_SUCCESS)
+			pr_err("ppa_drv_register_cap returned failure for capability TUNNEL_L2TP_US!!!\n");
+
+		if ((res = ppa_drv_register_cap(TUNNEL_L2TP_DS, 4, SWAC_HAL)) != PPA_SUCCESS)
+			pr_err("ppa_drv_register_cap returned failure for capability TUNNEL_L2TP_DS!!!\n");
+
 		printk("SWAC Init Success\n");
 		return res;
 	}
@@ -1820,16 +2140,18 @@ static int32_t swac_hal_generic_hook(PPA_GENERIC_HOOK_CMD cmd, void *buffer, uin
 		ppa_drv_deregister_cap(SESS_LOCAL_OUT,SWAC_HAL);
 		ppa_drv_deregister_cap(TUNNEL_6RD,SWAC_HAL);
 		ppa_drv_deregister_cap(TUNNEL_DSLITE,SWAC_HAL);
+		ppa_drv_deregister_cap(TUNNEL_L2TP_US,SWAC_HAL);
+		ppa_drv_deregister_cap(TUNNEL_L2TP_DS,SWAC_HAL);
 		return res;
 	} 
 	case PPA_GENERIC_HAL_GET_HAL_VERSION: {
 		PPA_VERSION *v = (PPA_VERSION *)buffer;
-		strcpy(v->version, "1.0.0"); 
+		strncpy(v->version, "1.0.0", 6);
 		return res;
 	}
 	case PPA_GENERIC_HAL_GET_PPE_FW_VERSION: {
 		PPA_VERSION *v=(PPA_VERSION *)buffer;
-		strcpy(v->version, "2.0.1"); 
+		strncpy(v->version, "2.0.1", 6);
 		return res;
 	} 
 	case PPA_GENERIC_HAL_UPDATE_SESS_META: {

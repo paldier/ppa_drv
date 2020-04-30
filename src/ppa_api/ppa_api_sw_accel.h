@@ -51,6 +51,9 @@ typedef enum {
 	SW_ACC_TYPE_LTCP_LRO,
 #endif
 #endif
+#if defined(L2TP_CONFIG) && L2TP_CONFIG
+	SW_ACC_TYPE_L2TP,
+#endif
 	SW_ACC_TYPE_MAX
 }sw_acc_type;
 

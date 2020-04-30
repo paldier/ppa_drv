@@ -766,17 +766,14 @@ static INLINE int32_t ppa_pkt_filter(PPA_BUF *ppa_buf, PPA_SESSION *session, uin
 
 	/* ignore protocols other than TCP/UDP, since some of them (e.g. ICMP) can't be handled safe in this arch*/
 	proto = ppa_get_pkt_ip_proto(ppa_buf);
+	if ((proto != PPA_IPPROTO_UDP) && (proto != PPA_IPPROTO_TCP)
 #if IS_ENABLED(CONFIG_PPA_MPE_IP97)
-	if (proto != PPA_IPPROTO_UDP && proto != PPA_IPPROTO_TCP &&
-		(proto == PPA_IPPROTO_TCP && !ppa_is_tcp_established(session)) && proto != 50)
-#else
-		if (proto != PPA_IPPROTO_UDP && proto != PPA_IPPROTO_TCP &&
-			(proto == PPA_IPPROTO_TCP && !ppa_is_tcp_established(session)))
+	    && (proto != IP_PROTO_ESP)
 #endif
-		{
-			ppa_filter.ppa_is_pkt_protocol_invalid++;
-			goto __PPA_SESSION_FILTED;
-		}
+	   ) {
+		ppa_filter.ppa_is_pkt_protocol_invalid++;
+		goto __PPA_SESSION_FILTED;
+	}
 
 	/*
 	 * Ignore special sessions with broadcast addresses and protocols with
@@ -1437,7 +1434,7 @@ IPoGRE and EoGRE does not terminate on same MAC !!
 				&p_item) == PPA_SESSION_EXISTS) {
 
 		/* Bridge mac entry learned through new interface? */
-		if (p_item->netif != netif) {
+		if ((p_item->netif != netif) && !(flags & PPA_F_STATIC_ENTRY)) {
 			p_item->netif = netif;
 			br_item_updated = 1;
 		}
@@ -1502,13 +1499,8 @@ IPoGRE and EoGRE does not terminate on same MAC !!
 			ret = PPA_SESSION_ADDED;
 			goto __BR_SESSION_ADD_DONE;
 		}
-	} else {
-		if (ppa_bridging_add_mac(mac_addr, fid, netif, &p_item, flags) != 0)
-			goto __BR_SESSION_ADD_DONE;
-
-		if (!(flags & PPA_F_STATIC_ENTRY)) /*For bridged Sessions*/
-			br_item_updated = 1;
-	}
+	} else if (ppa_bridging_add_mac(mac_addr, fid, netif, &p_item, flags) != 0)
+		goto __BR_SESSION_ADD_DONE;
 
 #if IS_ENABLED(CONFIG_SOC_GRX500) && CONFIG_SOC_GRX500
 __UPDATE_HW_SESSION:
@@ -1700,13 +1692,12 @@ int32_t ppa_bridge_entry_inactivity_status(uint8_t *mac_addr, PPA_NETIF *brif)
 	br_mac.fid = p_item->fid;
 	ppa_drv_test_and_clear_bridging_hit_stat(&br_mac, 0);
 	ret = br_mac.f_hit ? PPA_HIT : PPA_TIMEOUT;
-	goto __BR_INACTIVITY_DONE;
-#endif
+#else
 	if (p_item->timeout < ppa_get_time_in_sec() - p_item->last_hit_time) {
 		/* use < other than <= to avoid "false positives"*/
 		ret = PPA_TIMEOUT;
-		goto __BR_INACTIVITY_DONE;
 	}
+#endif
 
 __BR_INACTIVITY_DONE:
 	ppa_br_release_htable_lock();
@@ -2116,6 +2107,7 @@ int32_t ppa_add_if(PPA_IFINFO *ifinfo, uint32_t flags)
 	if (!ifinfo)
 		return PPA_EINVAL;
 
+	ppa_manual_if_lock_list();
 	ppa_list_for_each_entry_safe(local, num, &manual_del_iface_list,
 					 node_ptr) {
 		if (ppa_str_cmp(local->name, ifinfo->ifname)) {
@@ -2123,6 +2115,7 @@ int32_t ppa_add_if(PPA_IFINFO *ifinfo, uint32_t flags)
 			ppa_free(local);
 		}
 	}
+	ppa_manual_if_unlock_list();
 
 	ppa_debug(DBG_ENABLE_MASK_DEBUG_PRINT,
 			"ppa_add_if with force_wanitf_flag=%d in ppa_add_if\n",
@@ -2182,6 +2175,8 @@ int32_t ppa_del_if(PPA_IFINFO *ifinfo, uint32_t flags)
 		return PPA_SUCCESS;
 	}
 #endif
+
+	ppa_manual_if_lock_list();
 	ppa_list_for_each_entry_safe(local, num, &manual_del_iface_list,
 					 node_ptr) {
 		if (ppa_str_cmp(local->name, ifinfo->ifname)) {
@@ -2199,6 +2194,7 @@ int32_t ppa_del_if(PPA_IFINFO *ifinfo, uint32_t flags)
 						&manual_del_iface_list);
 		}
 	}
+	ppa_manual_if_unlock_list();
 
 	ppa_netif_remove(ifinfo->ifname, ifinfo->if_flags & PPA_F_LAN_IF);
 	ppa_remove_sessions_on_netif(ifinfo->ifname);
